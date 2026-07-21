@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import { compareVersions } from 'compare-versions';
+import { spawn } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -252,10 +253,10 @@ export class GitHubUpdater {
       const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
       log.info(`GitHubUpdater: Buffer created - ${buffer.length} bytes`);
 
-      // Save to Downloads directory
-      const downloadsDir = path.join(os.homedir(), 'Downloads');
+      const stagingDir = path.join(os.tmpdir(), `goose-update-${latestVersion}-${Date.now()}`);
+      await fs.mkdir(stagingDir, { recursive: true });
       const fileName = `${this.bundleName}-${latestVersion}.zip`;
-      const downloadPath = path.join(downloadsDir, fileName);
+      const downloadPath = path.join(stagingDir, fileName);
 
       log.info(`GitHubUpdater: Writing file to ${downloadPath}...`);
       await fs.writeFile(downloadPath, buffer);
@@ -264,8 +265,7 @@ export class GitHubUpdater {
       log.info(`=== GitHubUpdater: DOWNLOAD COMPLETE in ${totalDuration}ms ===`);
       log.info(`GitHubUpdater: File saved to ${downloadPath}`);
 
-      // Return success - user will handle extraction manually
-      return { success: true, downloadPath, extractedPath: downloadsDir };
+      return { success: true, downloadPath, extractedPath: stagingDir };
     } catch (error) {
       const duration = Date.now() - downloadStartTime;
       log.error(`=== GitHubUpdater: DOWNLOAD FAILED after ${duration}ms ===`);
@@ -280,6 +280,94 @@ export class GitHubUpdater {
         error: errorMessage(error, 'Unknown error'),
       };
     }
+  }
+
+  async installUpdate(downloadPath: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (process.platform !== 'darwin') {
+        throw new Error('Automatic install is only supported on macOS');
+      }
+
+      log.info('=== GitHubUpdater: STARTING AUTOMATIC INSTALL ===');
+      log.info(`GitHubUpdater: Download path: ${downloadPath}`);
+
+      await fs.access(downloadPath);
+
+      const exePath = app.getPath('exe');
+      const currentAppPath = path.resolve(exePath, '..', '..', '..');
+      if (!currentAppPath.endsWith('.app')) {
+        throw new Error(`Could not locate running .app bundle from ${exePath}`);
+      }
+      log.info(`GitHubUpdater: Current app bundle: ${currentAppPath}`);
+
+      const extractDir = path.join(path.dirname(downloadPath), 'extracted');
+      await fs.rm(extractDir, { recursive: true, force: true });
+      await fs.mkdir(extractDir, { recursive: true });
+
+      log.info(`GitHubUpdater: Extracting ${downloadPath} to ${extractDir}...`);
+      await this.runDitto(['-x', '-k', downloadPath, extractDir]);
+
+      const entries = await fs.readdir(extractDir);
+      const appEntry = entries.find((e) => e.endsWith('.app'));
+      if (!appEntry) {
+        throw new Error(`No .app bundle found in extracted update at ${extractDir}`);
+      }
+      const newAppPath = path.join(extractDir, appEntry);
+      log.info(`GitHubUpdater: New app bundle: ${newAppPath}`);
+
+      const pid = process.pid;
+      const stagingDir = path.dirname(downloadPath);
+      const scriptPath = path.join(stagingDir, 'swap-and-relaunch.sh');
+      const logPath = path.join(stagingDir, 'install.log');
+
+      const script = `#!/bin/bash
+set -e
+exec >> "${logPath}" 2>&1
+for i in $(seq 1 120); do
+  if ! kill -0 ${pid} 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+rm -rf "${currentAppPath}"
+ditto "${newAppPath}" "${currentAppPath}"
+xattr -dr com.apple.quarantine "${currentAppPath}" || true
+open "${currentAppPath}"
+rm -rf "${stagingDir}"
+`;
+
+      await fs.writeFile(scriptPath, script, { mode: 0o755 });
+      log.info(`GitHubUpdater: Wrote swap script to ${scriptPath}`);
+
+      const child = spawn('/bin/bash', [scriptPath], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+
+      log.info('=== GitHubUpdater: SWAP SCRIPT LAUNCHED, app will quit ===');
+      return { success: true };
+    } catch (error) {
+      log.error('GitHubUpdater: Error installing update:', error);
+      return {
+        success: false,
+        error: errorMessage(error, 'Unknown error'),
+      };
+    }
+  }
+
+  private runDitto(args: string[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('ditto', args, { stdio: 'ignore' });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`ditto exited with code ${code}`));
+        }
+      });
+    });
   }
 }
 

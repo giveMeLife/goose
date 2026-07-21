@@ -188,7 +188,7 @@ export type AnalyticsEvent =
       properties: {
         version: string;
         method: 'electron-updater' | 'github-fallback';
-        action: 'quit_and_install' | 'open_folder_and_quit' | 'open_folder_only';
+        action: 'quit_and_install' | 'auto_swap_and_relaunch';
       };
     };
 // NOTE: slash_command_used is tracked by the backend (posthog.rs) with command_type info
@@ -646,7 +646,7 @@ export function trackUpdateDownloadCompleted(
 export function trackUpdateInstallInitiated(
   version: string,
   method: UpdateMethod,
-  action: 'quit_and_install' | 'open_folder_and_quit' | 'open_folder_only'
+  action: 'quit_and_install' | 'auto_swap_and_relaunch'
 ): void {
   trackEvent({
     name: 'update_install_initiated',
