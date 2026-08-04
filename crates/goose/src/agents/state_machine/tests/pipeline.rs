@@ -753,6 +753,8 @@ async fn build_test_pipeline(
         ExtensionManagerCapabilities {
             mcpui: false,
             host_info: None,
+            elicitation_handler: None,
+            protocol_version: None,
         },
         false,
     ));
