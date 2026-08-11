@@ -36,7 +36,7 @@ use super::extension::{
 use super::tool_execution::{ToolCallContext, ToolCallNotificationEmitter, ToolCallResult};
 use super::types::SharedProvider;
 use crate::action_required_manager::ActionRequiredManager;
-use crate::agents::extension::{Envs, ProcessExit};
+use crate::agents::extension::Envs;
 use crate::agents::extension_malware_check;
 use crate::agents::mcp_client::{
     GooseMcpClientCapabilities, GooseMcpHostInfo, McpClient, McpClientTrait,
@@ -437,21 +437,26 @@ async fn child_process_client(
         );
     }
 
-    let (transport, mut stderr) = TokioChildProcess::builder(command)
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stderr = stderr.take().ok_or_else(|| {
-        ExtensionError::SetupError("failed to attach child process stderr".to_owned())
-    })?;
-
-    let stderr_task = tokio::spawn(async move {
-        let mut all_stderr = Vec::new();
-        stderr.read_to_end(&mut all_stderr).await?;
-        Ok::<String, std::io::Error>(String::from_utf8_lossy(&all_stderr).into())
-    });
-
-    let client_result = McpClient::connect_with_container(
-        transport,
+    let stderr_tasks = Arc::new(Mutex::new(Vec::new()));
+    let client_result = McpClient::connect_with_factory(
+        || {
+            let command = clone_command(&command);
+            let stderr_tasks = stderr_tasks.clone();
+            async move {
+                let (transport, mut stderr) = TokioChildProcess::builder(command)
+                    .stderr(Stdio::piped())
+                    .spawn()?;
+                let mut stderr = stderr.take().ok_or_else(|| {
+                    std::io::Error::other("failed to attach child process stderr")
+                })?;
+                stderr_tasks.lock().await.push(tokio::spawn(async move {
+                    let mut all_stderr = Vec::new();
+                    stderr.read_to_end(&mut all_stderr).await?;
+                    Ok::<String, std::io::Error>(String::from_utf8_lossy(&all_stderr).into())
+                }));
+                Ok::<_, anyhow::Error>(transport)
+            }
+        },
         Duration::from_secs(resolve_timeout(*timeout)),
         provider,
         docker_container,
@@ -466,11 +471,10 @@ async fn child_process_client(
     match client_result {
         Ok(client) => Ok(client),
         Err(error) => {
-            let error_task_out = stderr_task.await?;
-            Err::<McpClient, ExtensionError>(match error_task_out {
-                Ok(stderr_content) => ProcessExit::new(stderr_content, error).into(),
-                Err(e) => e.into(),
-            })
+            for task in stderr_tasks.lock().await.drain(..) {
+                let _ = task.await;
+            }
+            Err(ExtensionError::SetupError(error.to_string()))
         }
     }
 }
@@ -1592,18 +1596,6 @@ impl ExtensionManager {
                 tracing::warn!(extension = %name, error = %e, "failed to update roots");
             }
         }
-    }
-
-    pub async fn get_extension_and_tool_counts(&self, session_id: &str) -> (usize, usize) {
-        let enabled_extensions_count = self.extensions.lock().await.len();
-
-        let total_tools = self
-            .get_prefixed_tools(session_id, None)
-            .await
-            .map(|tools| tools.len())
-            .unwrap_or(0);
-
-        (enabled_extensions_count, total_tools)
     }
 
     pub async fn list_extensions(&self) -> ExtensionResult<Vec<String>> {

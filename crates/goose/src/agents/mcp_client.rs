@@ -355,6 +355,18 @@ fn working_dir_roots(dir: &std::path::Path) -> ListRootsResult {
     ListRootsResult::new(vec![Root::new(uri).with_name("working_directory")])
 }
 
+/// Fan out a notification to all subscribers, dropping senders whose receivers are gone.
+fn fan_out_notification(
+    handlers: &mut Vec<Sender<ServerNotification>>,
+    notification: ServerNotification,
+) {
+    handlers.retain(|handler| match handler.try_send(notification.clone()) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => true,
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    });
+}
+
 impl ClientHandler for GooseClient {
     #[expect(deprecated)]
     async fn list_roots(
@@ -369,15 +381,12 @@ impl ClientHandler for GooseClient {
         params: rmcp::model::ProgressNotificationParam,
         context: rmcp::service::NotificationContext<rmcp::RoleClient>,
     ) {
-        self.notification_handlers
-            .lock()
-            .await
-            .iter()
-            .for_each(|handler| {
-                let mut not = Notification::new(params.clone());
-                not.extensions = context.extensions.clone();
-                let _ = handler.try_send(ServerNotification::ProgressNotification(not));
-            });
+        let mut not = Notification::new(params);
+        not.extensions = context.extensions;
+        fan_out_notification(
+            &mut *self.notification_handlers.lock().await,
+            ServerNotification::ProgressNotification(not),
+        );
     }
 
     async fn on_tool_list_changed(&self, _context: rmcp::service::NotificationContext<RoleClient>) {
@@ -390,16 +399,12 @@ impl ClientHandler for GooseClient {
         params: rmcp::model::LoggingMessageNotificationParam,
         context: rmcp::service::NotificationContext<rmcp::RoleClient>,
     ) {
-        self.notification_handlers
-            .lock()
-            .await
-            .iter()
-            .for_each(|handler| {
-                let mut notification = LoggingMessageNotification::new(params.clone());
-                notification.extensions = context.extensions.clone();
-                let _ =
-                    handler.try_send(ServerNotification::LoggingMessageNotification(notification));
-            });
+        let mut notification = LoggingMessageNotification::new(params);
+        notification.extensions = context.extensions;
+        fan_out_notification(
+            &mut *self.notification_handlers.lock().await,
+            ServerNotification::LoggingMessageNotification(notification),
+        );
     }
 
     #[expect(deprecated)]
@@ -732,6 +737,61 @@ impl McpClient {
             timeout,
             docker_container,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn connect_with_factory<F, Fut, T, E, A>(
+        mut create_transport: F,
+        timeout: std::time::Duration,
+        provider: SharedProvider,
+        docker_container: Option<String>,
+        client_name: String,
+        capabilities: GooseMcpClientCapabilities,
+        working_dir: PathBuf,
+        action_required: Arc<ActionRequiredManager>,
+        extension_manager: Weak<ExtensionManager>,
+    ) -> anyhow::Result<Self>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+        T: IntoTransport<RoleClient, E, A>,
+        E: std::error::Error + From<std::io::Error> + Send + Sync + 'static,
+    {
+        let transport = create_transport().await?;
+        match Self::connect_with_container(
+            transport,
+            timeout,
+            provider.clone(),
+            docker_container.clone(),
+            client_name.clone(),
+            capabilities.clone(),
+            working_dir.clone(),
+            action_required.clone(),
+            extension_manager.clone(),
+        )
+        .await
+        {
+            Err(ClientInitializeError::JsonRpcError(error))
+                if capabilities.protocol_version.is_none()
+                    && error.code == ErrorCode::INVALID_PARAMS =>
+            {
+                let mut legacy_capabilities = capabilities;
+                legacy_capabilities.protocol_version = Some(ProtocolVersion::LATEST);
+                Ok(Self::connect_with_container(
+                    create_transport().await?,
+                    timeout,
+                    provider,
+                    docker_container,
+                    client_name,
+                    legacy_capabilities,
+                    working_dir,
+                    action_required,
+                    extension_manager,
+                )
+                .await?)
+            }
+            result => Ok(result?),
+        }
     }
 
     pub fn docker_container(&self) -> Option<&str> {
@@ -1719,5 +1779,64 @@ mod tests {
         assert_eq!(result.roots.len(), 1);
         assert_eq!(result.roots[0].uri, "file:///tmp/test-project");
         assert_eq!(result.roots[0].name.as_deref(), Some("working_directory"));
+    }
+
+    #[tokio::test]
+    async fn fan_out_notification_prunes_closed_subscribers() {
+        use rmcp::model::{NumberOrString, ProgressNotificationParam, ProgressToken};
+
+        let handlers = Arc::new(Mutex::new(Vec::new()));
+        let mut receivers = Vec::new();
+        for _ in 0..5 {
+            let (tx, rx) = mpsc::channel(16);
+            handlers.lock().await.push(tx);
+            receivers.push(rx);
+        }
+        assert_eq!(handlers.lock().await.len(), 5);
+
+        // Drop all receivers, simulating tool-call completion.
+        drop(receivers);
+
+        let notification = ServerNotification::ProgressNotification(Notification::new(
+            ProgressNotificationParam::new(
+                ProgressToken(NumberOrString::String(Arc::from("token"))),
+                1.0,
+            ),
+        ));
+        fan_out_notification(&mut *handlers.lock().await, notification);
+        assert!(
+            handlers.lock().await.is_empty(),
+            "closed subscribers must be pruned on fan-out"
+        );
+
+        // A live subscriber survives fan-out; subsequent closed ones still prune.
+        let mut live_rx = {
+            let (tx, rx) = mpsc::channel(16);
+            handlers.lock().await.push(tx);
+            rx
+        };
+        for _ in 0..3 {
+            let (tx, rx) = mpsc::channel(16);
+            handlers.lock().await.push(tx);
+            drop(rx);
+        }
+        assert_eq!(handlers.lock().await.len(), 4);
+
+        let notification = ServerNotification::ProgressNotification(Notification::new(
+            ProgressNotificationParam::new(
+                ProgressToken(NumberOrString::String(Arc::from("token-2"))),
+                2.0,
+            ),
+        ));
+        fan_out_notification(&mut *handlers.lock().await, notification.clone());
+        assert_eq!(handlers.lock().await.len(), 1);
+        let received = live_rx
+            .recv()
+            .await
+            .expect("live subscriber should receive");
+        assert!(matches!(
+            received,
+            ServerNotification::ProgressNotification(_)
+        ));
     }
 }
