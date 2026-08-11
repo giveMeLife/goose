@@ -1,4 +1,5 @@
 use goose::agents::execute_commands::list_commands;
+use goose::agents::platform_extensions::summon::discover_filesystem_sources;
 use goose::config::{Config, GooseMode};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::{CmdKind, Highlighter};
@@ -384,26 +385,78 @@ impl GooseCompleter {
         if let Some(last_part) = parts.last() {
             // Skip filename completion for words starting with special characters
             if last_part.starts_with('/') && last_part.len() == 1 {
-                // Just a slash - no completion
                 return Ok((line.len(), vec![]));
             }
 
             if last_part.starts_with('-') || last_part.contains('=') {
-                // Skip flag or key-value pairs
                 return Ok((line.len(), vec![]));
             }
 
-            // Complete the partial path
             let pos = line.len() - last_part.len();
             let (start, candidates) =
                 self.filename_completer
                     .complete(last_part, last_part.len(), ctx)?;
 
-            // Return the completion results, with adjusted position
             return Ok((pos + start, candidates));
         }
 
         Ok((line.len(), vec![]))
+    }
+
+    /// Complete file paths after an `@` mention prefix.
+    ///
+    /// When the user types `@` followed by a partial path and presses Tab,
+    /// this lists matching files and folders. The `@` prefix is preserved
+    /// in the replacement so it stays in the line.
+    fn complete_at_path(&self, line: &str, ctx: &Context) -> Result<(usize, Vec<Pair>)> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+
+        let Some(last_part) = parts.last() else {
+            return Ok((line.len(), vec![]));
+        };
+
+        if !last_part.starts_with('@') {
+            return Ok((line.len(), vec![]));
+        }
+
+        let path_part = last_part.strip_prefix('@').unwrap_or("");
+        let at_pos = line.len() - last_part.len();
+
+        let mut candidates: Vec<Pair> = Vec::new();
+
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let subagents = discover_filesystem_sources(&cwd);
+        for s in &subagents {
+            if path_part.is_empty() || s.name.starts_with(path_part) {
+                candidates.push(Pair {
+                    display: format!("[agent] {}", s.name),
+                    replacement: format!("@{}", s.name),
+                });
+            }
+        }
+
+        if path_part.is_empty() {
+            let (start, file_candidates) = self.filename_completer.complete("", 0, ctx)?;
+            for c in &file_candidates {
+                candidates.push(Pair {
+                    display: c.display.clone(),
+                    replacement: format!("@{}", c.replacement),
+                });
+            }
+            return Ok((at_pos + start, candidates));
+        }
+
+        let (start, file_candidates) =
+            self.filename_completer
+                .complete(path_part, path_part.len(), ctx)?;
+        for c in &file_candidates {
+            candidates.push(Pair {
+                display: c.display.clone(),
+                replacement: format!("@{}", c.replacement),
+            });
+        }
+
+        Ok((at_pos + start, candidates))
     }
 }
 
@@ -502,6 +555,14 @@ impl Completer for GooseCompleter {
         }
 
         // For normal text (not slash commands), try file path completion
+        // If the last word starts with '@', complete as an @-mention path
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if let Some(last_part) = parts.last() {
+            if last_part.starts_with('@') {
+                return self.complete_at_path(line, ctx);
+            }
+        }
+
         self.complete_file_path(line, ctx)
     }
 }
