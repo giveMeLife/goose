@@ -287,11 +287,10 @@ pub async fn oauth_flow_with_config(
     let mut auth_manager = oauth_state
         .into_authorization_manager()
         .ok_or_else(|| anyhow::anyhow!("Failed to get authorization manager"))?;
-    let granted_scopes = token_response
-        .as_ref()
-        .and_then(|tr| tr.scopes())
-        .map(|scopes| scopes.iter().map(|s| s.to_string()).collect())
-        .unwrap_or_default();
+    let granted_scopes = match token_response.as_ref().and_then(|tr| tr.scopes()) {
+        Some(scopes) => scopes.iter().map(|scope| scope.to_string()).collect(),
+        None => auth_manager.get_current_scopes().await,
+    };
     credential_store
         .save(StoredCredentials::new(
             client_id,
