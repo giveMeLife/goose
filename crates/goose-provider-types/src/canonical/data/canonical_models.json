@@ -160556,6 +160556,35 @@
     }
   },
   {
+    "id": "openrouter/tencent/hy4-preview",
+    "name": "Tencent: Hy4 preview",
+    "family": "Hy",
+    "attachment": false,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": true,
+    "release_date": "2026-08-27",
+    "last_updated": "2026-08-27",
+    "modalities": {
+      "input": [
+        "text"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {
+      "input": 0.834,
+      "output": 2.501,
+      "cache_read": 0.042
+    },
+    "limit": {
+      "context": 1048576,
+      "output": 64000
+    }
+  },
+  {
     "id": "openrouter/undi95/remm-slerp-l2-13b",
     "name": "ReMM SLERP 13B",
     "attachment": false,
