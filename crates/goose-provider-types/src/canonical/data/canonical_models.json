@@ -154739,6 +154739,72 @@
     }
   },
   {
+    "id": "openrouter/meta/muse-spark-1.3",
+    "name": "Meta: Muse Spark 1.3",
+    "family": "Muse Spark",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": true,
+    "release_date": "2026-09-02",
+    "last_updated": "2026-09-02",
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {
+      "input": 1.25,
+      "output": 4.25,
+      "cache_read": 0.15
+    },
+    "limit": {
+      "context": 1048576,
+      "output": 943718
+    }
+  },
+  {
+    "id": "openrouter/meta/muse-spark-1.3-contributor",
+    "name": "Meta: Muse Spark 1.3 Contributor",
+    "family": "Muse Spark",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": true,
+    "release_date": "2026-09-02",
+    "last_updated": "2026-09-02",
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {
+      "input": 0.1,
+      "output": 0.2,
+      "cache_read": 0.002
+    },
+    "limit": {
+      "context": 1048576,
+      "output": 943718
+    }
+  },
+  {
     "id": "openrouter/microsoft/phi-4",
     "name": "Phi 4",
     "family": "phi",
