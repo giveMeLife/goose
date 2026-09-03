@@ -153754,6 +153754,39 @@
     }
   },
   {
+    "id": "openrouter/google/gemini-3.8-flash",
+    "name": "Google: Gemini 3.8 Flash",
+    "family": "Gemini",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": true,
+    "release_date": "2026-09-02",
+    "last_updated": "2026-09-02",
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075
+    },
+    "limit": {
+      "context": 1048576,
+      "output": 65536
+    }
+  },
+  {
     "id": "openrouter/google/gemma-2-27b-it",
     "name": "Gemma 2 27B",
     "family": "gemma",
