@@ -1841,6 +1841,7 @@ impl CliSession {
             if self.stats {
                 print_run_stats(run_started, first_token_at, last_usage.as_ref());
             }
+            self.display_session_status().await;
         }
 
         Ok(())
@@ -2089,6 +2090,55 @@ impl CliSession {
     pub async fn get_total_token_usage(&self) -> Result<Option<i32>> {
         let metadata = self.get_session().await?;
         Ok(metadata.accumulated_usage.total_tokens)
+    }
+
+    /// One-line status summary after each agent response: model, context
+    /// usage, and session cost.
+    async fn display_session_status(&self) {
+        if self.output_format == "json" || self.output_format == "stream-json" {
+            return;
+        }
+        if !std::io::stdout().is_terminal() {
+            return;
+        }
+        let Ok(model_config) = self.agent.model_config_for_session(&self.session_id).await else {
+            return;
+        };
+        let Ok(provider) = self.agent.provider().await else {
+            return;
+        };
+        let context_limit =
+            goose::context_limit::get_context_limit(provider.as_ref(), &model_config.model_name)
+                .await
+                .unwrap_or_else(|_| model_config.context_limit());
+
+        let total_tokens = self
+            .get_session()
+            .await
+            .ok()
+            .map(|m| {
+                m.accumulated_usage
+                    .total_tokens
+                    .or(m.usage.total_tokens)
+                    .unwrap_or(0) as usize
+            })
+            .unwrap_or(0);
+
+        let session_cost = self
+            .agent
+            .config
+            .session_manager
+            .get_session_usage_totals(&self.session_id)
+            .await
+            .ok()
+            .and_then(|t| t.accumulated_cost);
+
+        output::render_session_status_line(
+            &model_config.model_name,
+            total_tokens,
+            context_limit,
+            session_cost,
+        );
     }
 
     /// Display enhanced context usage with session totals
@@ -2540,6 +2590,14 @@ fn handle_mcp_notification(
                             });
                             return;
                         }
+                        if interactive && !is_json_mode {
+                            progress_bars.update_subagent(
+                                subagent_id,
+                                &output::format_subagent_tool_call_message(subagent_id, tool_name),
+                                false,
+                            );
+                            return;
+                        }
                         if !is_json_mode {
                             output::render_subagent_tool_call(
                                 subagent_id,
@@ -2726,12 +2784,10 @@ fn display_log_notification(
     interactive: bool,
     is_json_mode: bool,
 ) {
-    if subagent_id.is_some() {
-        if interactive {
-            let _ = progress_bars.hide();
-            if !is_json_mode {
-                println!("{}", console::style(formatted_message).green().dim());
-            }
+    if let Some(sid) = subagent_id {
+        let done = matches!(notification_type, Some("completed") | Some("terminated"));
+        if interactive && !is_json_mode {
+            progress_bars.update_subagent(sid, formatted_message, done);
         } else if !is_json_mode {
             progress_bars.log(formatted_message);
         }

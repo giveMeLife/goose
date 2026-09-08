@@ -1578,11 +1578,44 @@ pub fn display_cost_usage(provider: &str, model: &str, usage: &Usage) {
     }
 }
 
+pub fn render_session_status_line(
+    model: &str,
+    total_tokens: usize,
+    context_limit: usize,
+    session_cost: Option<f64>,
+) {
+    use console::style;
+
+    let percentage = if context_limit == 0 {
+        0
+    } else {
+        (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100)
+    };
+    let bar_width = 12;
+    let filled = ((percentage as f64 / 100.0) * bar_width as f64).round() as usize;
+    let filled = filled.min(bar_width);
+    let bar = format!("{}{}", "━".repeat(filled), "╌".repeat(bar_width - filled));
+    let bar_colored = if percentage < 50 {
+        style(bar).green().dim()
+    } else if percentage < 85 {
+        style(bar).yellow()
+    } else {
+        style(bar).red()
+    };
+
+    let mut line = format!("{} {}% ctx │ {}", bar_colored, percentage, model);
+    if let Some(cost) = session_cost {
+        line = format!("{} │ ${:.4} sesión", line, cost);
+    }
+    println!("  {} {}", style("🪿").dim(), style(line).dim());
+}
+
 pub struct McpSpinners {
     bars: HashMap<String, ProgressBar>,
     log_spinner: Option<ProgressBar>,
     shell_output_lines: VecDeque<String>,
     multi_bar: MultiProgress,
+    subagent_bars: HashMap<String, ProgressBar>,
 }
 
 impl McpSpinners {
@@ -1592,7 +1625,37 @@ impl McpSpinners {
             log_spinner: None,
             shell_output_lines: VecDeque::new(),
             multi_bar: MultiProgress::new(),
+            subagent_bars: HashMap::new(),
         }
+    }
+
+    /// Update (or create) a persistent status line for a subagent, replacing
+    /// the previous per-action println spam with a single line per subagent
+    /// that refreshes in place. On `done`, the line is finalized and kept.
+    pub fn update_subagent(&mut self, subagent_id: &str, message: &str, done: bool) {
+        if done {
+            if let Some(bar) = self.subagent_bars.remove(subagent_id) {
+                bar.finish_with_message(format!("✔ {}", message));
+            }
+            return;
+        }
+        let bar = self
+            .subagent_bars
+            .entry(subagent_id.to_string())
+            .or_insert_with(|| {
+                let bar = self.multi_bar.add(
+                    ProgressBar::new_spinner()
+                        .with_style(
+                            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                                .unwrap()
+                                .tick_chars("⠋⠙⠚⠛⠓⠒⠊⠉"),
+                        )
+                        .with_message(message.to_string()),
+                );
+                bar.enable_steady_tick(Duration::from_millis(100));
+                bar
+            });
+        bar.set_message(message.to_string());
     }
 
     pub fn log(&mut self, message: &str) {
