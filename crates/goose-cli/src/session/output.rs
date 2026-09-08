@@ -1581,50 +1581,174 @@ pub fn display_cost_usage(provider: &str, model: &str, usage: &Usage) {
     }
 }
 
-pub fn format_session_status_line(
-    model: &str,
-    provider: &str,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusColor {
+    Orange,
+    Cyan,
+    Mauve,
+    Green,
+    Yellow,
+    Red,
+    Peach,
+}
+
+#[derive(Debug, Clone)]
+struct StatusSegment {
+    text: String,
+    color: StatusColor,
+    required: bool,
+}
+
+struct StatusLineData<'a> {
+    model: &'a str,
+    provider: &'a str,
     total_tokens: usize,
     context_limit: usize,
     tokens_per_second: Option<f64>,
     ttft_secs: Option<f64>,
     session_cost: Option<f64>,
-) -> String {
-    fn fmt_tokens(n: usize) -> String {
-        if n >= 1_000_000 {
-            format!("{:.2}M", n as f64 / 1_000_000.0)
-        } else if n >= 1_000 {
-            format!("{}k", n / 1_000)
-        } else {
-            n.to_string()
-        }
-    }
+}
 
-    let percentage = if context_limit == 0 {
+fn format_status_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+fn context_status_color(percentage: usize) -> StatusColor {
+    if percentage < 50 {
+        StatusColor::Green
+    } else if percentage < 85 {
+        StatusColor::Yellow
+    } else {
+        StatusColor::Red
+    }
+}
+
+fn ttft_status_color(ttft_secs: f64) -> StatusColor {
+    if ttft_secs < 3.0 {
+        StatusColor::Green
+    } else if ttft_secs <= 6.0 {
+        StatusColor::Yellow
+    } else {
+        StatusColor::Red
+    }
+}
+
+fn join_status_segments(segments: &[StatusSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" │ ")
+}
+
+fn truncate_status_model(model: &str, max_width: usize) -> String {
+    if measure_text_width(model) <= max_width {
+        return model.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    let mut truncated = String::new();
+    for ch in model.chars() {
+        if measure_text_width(&truncated) + measure_text_width(&ch.to_string()) + 1 > max_width {
+            break;
+        }
+        truncated.push(ch);
+    }
+    format!("{truncated}…")
+}
+
+fn status_line_segments(width: usize, data: StatusLineData<'_>) -> Vec<StatusSegment> {
+    let percentage = if data.context_limit == 0 {
         0
     } else {
-        (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100)
+        (((data.total_tokens as f64 / data.context_limit as f64) * 100.0).round() as usize).min(100)
     };
-    let mut parts = vec![
-        model.to_string(),
-        provider.to_string(),
-        format!(
-            "{}/{} ({}%)",
-            fmt_tokens(total_tokens),
-            fmt_tokens(context_limit),
-            percentage
-        ),
+    let context = format!(
+        "{}/{} ({}%)",
+        format_status_tokens(data.total_tokens),
+        format_status_tokens(data.context_limit),
+        percentage
+    );
+    let mut segments = vec![
+        StatusSegment {
+            text: "🪿".to_string(),
+            color: StatusColor::Orange,
+            required: true,
+        },
+        StatusSegment {
+            text: data.model.to_string(),
+            color: StatusColor::Cyan,
+            required: true,
+        },
+        StatusSegment {
+            text: data.provider.to_string(),
+            color: StatusColor::Mauve,
+            required: false,
+        },
+        StatusSegment {
+            text: context,
+            color: context_status_color(percentage),
+            required: true,
+        },
     ];
-    if let Some(rate) = tokens_per_second {
-        parts.push(format!("{rate:.1} tps"));
+    if let Some(tps) = data.tokens_per_second {
+        segments.push(StatusSegment {
+            text: format!("{tps:.1} tps"),
+            color: StatusColor::Green,
+            required: false,
+        });
     }
-    if let Some(ttft) = ttft_secs {
-        parts.push(format!("ttft {ttft:.2}s"));
+    if let Some(ttft) = data.ttft_secs {
+        segments.push(StatusSegment {
+            text: format!("ttft {ttft:.2}s"),
+            color: ttft_status_color(ttft),
+            required: false,
+        });
     }
-    if let Some(cost) = session_cost {
-        parts.push(format!("${cost:.4} sesión"));
+    if let Some(cost) = data.session_cost {
+        segments.push(StatusSegment {
+            text: format!("${cost:.4}"),
+            color: StatusColor::Peach,
+            required: false,
+        });
     }
-    parts.join(" │ ")
+
+    let max_width = width.saturating_sub(2);
+    while measure_text_width(&join_status_segments(&segments)) > max_width {
+        if let Some(index) = segments.iter().rposition(|segment| !segment.required) {
+            segments.remove(index);
+        } else {
+            break;
+        }
+    }
+    if measure_text_width(&join_status_segments(&segments)) > max_width {
+        let non_model_width = measure_text_width(&join_status_segments(&[
+            segments[0].clone(),
+            segments[2].clone(),
+        ])) + 3;
+        segments[1].text =
+            truncate_status_model(data.model, max_width.saturating_sub(non_model_width));
+    }
+    segments
+}
+
+fn status_color(color: StatusColor) -> Color {
+    match color {
+        StatusColor::Orange => Color::Color256(208),
+        StatusColor::Cyan => Color::Cyan,
+        StatusColor::Mauve => Color::Magenta,
+        StatusColor::Green => Color::Green,
+        StatusColor::Yellow => Color::Yellow,
+        StatusColor::Red => Color::Red,
+        StatusColor::Peach => Color::Color256(216),
+    }
 }
 
 pub fn render_session_status_line(
@@ -1636,37 +1760,27 @@ pub fn render_session_status_line(
     ttft_secs: Option<f64>,
     session_cost: Option<f64>,
 ) {
-    use console::style;
-
-    let percentage = if context_limit == 0 {
-        0
-    } else {
-        (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100)
-    };
-    let bar_width = 10;
-    let filled = ((percentage as f64 / 100.0) * bar_width as f64).round() as usize;
-    let bar = format!(
-        "{}{}",
-        "━".repeat(filled.min(bar_width)),
-        "╌".repeat(bar_width - filled.min(bar_width))
+    let width = Term::stdout().size().1 as usize;
+    let segments = status_line_segments(
+        width,
+        StatusLineData {
+            model,
+            provider,
+            total_tokens,
+            context_limit,
+            tokens_per_second,
+            ttft_secs,
+            session_cost,
+        },
     );
-    let bar = if percentage < 50 {
-        style(bar).green().dim()
-    } else if percentage < 85 {
-        style(bar).yellow()
-    } else {
-        style(bar).red()
-    };
-    let line = format_session_status_line(
-        model,
-        provider,
-        total_tokens,
-        context_limit,
-        tokens_per_second,
-        ttft_secs,
-        session_cost,
-    );
-    println!("  {} {} {}", style("🪿").dim(), bar, style(line).dim());
+    print!("  ");
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            print!("{}", style(" │ ").dim());
+        }
+        print!("{}", style(&segment.text).fg(status_color(segment.color)));
+    }
+    println!();
 }
 
 pub struct McpSpinners {
@@ -1833,28 +1947,72 @@ mod tests {
     }
 
     #[test]
-    fn status_line_shows_active_context_model_and_provider() {
-        let line = format_session_status_line(
-            "openai/gpt-5.6-sol",
-            "openrouter",
-            10_000,
-            1_000_000,
-            Some(42.8),
-            Some(0.41),
-            Some(0.0031),
+    fn status_line_drops_optional_segments_before_wrapping() {
+        let segments = status_line_segments(
+            45,
+            StatusLineData {
+                model: "openai/gpt-5.6-sol",
+                provider: "openrouter",
+                total_tokens: 10_000,
+                context_limit: 1_000_000,
+                tokens_per_second: Some(42.8),
+                ttft_secs: Some(0.41),
+                session_cost: Some(0.0031),
+            },
         );
+        let text = join_status_segments(&segments);
+
+        assert!(text.contains("openai/gpt-5.6-sol"));
+        assert!(text.contains("10k/1.00M (1%)"));
+        assert!(!text.contains("$0.0031"));
+        assert!(!text.contains("42.8 tps"));
+    }
+
+    #[test]
+    fn status_line_ttft_colors_follow_thresholds() {
+        assert_eq!(ttft_status_color(2.9), StatusColor::Green);
+        assert_eq!(ttft_status_color(3.0), StatusColor::Yellow);
+        assert_eq!(ttft_status_color(6.0), StatusColor::Yellow);
+        assert_eq!(ttft_status_color(6.1), StatusColor::Red);
+    }
+
+    #[test]
+    fn status_line_shows_active_context_model_and_provider() {
+        let line = join_status_segments(&status_line_segments(
+            usize::MAX,
+            StatusLineData {
+                model: "openai/gpt-5.6-sol",
+                provider: "openrouter",
+                total_tokens: 10_000,
+                context_limit: 1_000_000,
+                tokens_per_second: Some(42.8),
+                ttft_secs: Some(0.41),
+                session_cost: Some(0.0031),
+            },
+        ));
 
         assert!(line.contains("openai/gpt-5.6-sol"));
         assert!(line.contains("openrouter"));
         assert!(line.contains("10k/1.00M (1%)"));
         assert!(line.contains("42.8 tps"));
         assert!(line.contains("ttft 0.41s"));
-        assert!(line.contains("$0.0031 sesión"));
+        assert!(line.contains("$0.0031"));
     }
 
     #[test]
     fn status_line_omits_unavailable_turn_metrics() {
-        let line = format_session_status_line("model", "provider", 0, 128_000, None, None, None);
+        let line = join_status_segments(&status_line_segments(
+            usize::MAX,
+            StatusLineData {
+                model: "model",
+                provider: "provider",
+                total_tokens: 0,
+                context_limit: 128_000,
+                tokens_per_second: None,
+                ttft_secs: None,
+                session_cost: None,
+            },
+        ));
 
         assert!(!line.contains("tps"));
         assert!(!line.contains("ttft"));
