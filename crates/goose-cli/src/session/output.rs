@@ -1439,10 +1439,26 @@ pub fn format_goose_banner_details(
     format!("🪿 goose v{version} │ {state} │ {provider} │ {model}\n   {session_id} │ {cwd}")
 }
 
+fn goose_banner_body_color(theme: Theme) -> Color {
+    match theme {
+        Theme::Light => Color::Black,
+        Theme::Dark | Theme::Ansi => Color::White,
+    }
+}
+
 pub fn display_goose_banner(info: &super::SessionDisplayInfo, session_id: &str) {
     use console::style;
 
-    println!("{}", style(GOOSE_ASCII).cyan());
+    let body_color = goose_banner_body_color(get_theme());
+    for line in GOOSE_ASCII.lines() {
+        if let Some(remainder) = line.strip_prefix("    >") {
+            print!("{}", style("    ").fg(body_color));
+            print!("{}", style(">").fg(Color::Color256(208)));
+            println!("{}", style(remainder).fg(body_color));
+        } else {
+            println!("{}", style(line).fg(body_color));
+        }
+    }
     println!(
         "  {}",
         style(format_goose_banner_details(
@@ -1752,6 +1768,13 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+
+    #[test]
+    fn goose_banner_body_color_matches_cli_theme() {
+        assert_eq!(goose_banner_body_color(Theme::Dark), console::Color::White);
+        assert_eq!(goose_banner_body_color(Theme::Light), console::Color::Black);
+        assert_eq!(goose_banner_body_color(Theme::Ansi), console::Color::White);
+    }
 
     #[test]
     fn goose_banner_details_include_session_metadata() {
