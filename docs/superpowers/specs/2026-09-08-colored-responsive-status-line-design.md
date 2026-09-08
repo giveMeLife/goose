@@ -17,7 +17,7 @@ The normal status line contains, in priority order:
 - Context bar and percentage: green below 50%, yellow from 50% through 84%, red from 85%.
 - Context token text: blue.
 - TPS: green.
-- TTFT: green below 2 seconds, yellow from 2 seconds through 5 seconds, red above 5 seconds.
+- TTFT: green below 3 seconds, yellow from 3 seconds through 6 seconds, red above 6 seconds.
 - Cost: peach/orange (`Color::Color256(216)`).
 
 ## Responsive behavior
