@@ -1583,7 +1583,7 @@ impl CliSession {
                 result = stream.next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
-                            if first_token_at.is_none() && message_has_text(&message) {
+                            if first_token_at.is_none() && message_has_output(&message) {
                                 first_token_at = Some(Instant::now());
                             }
                             if let Some((id, security_prompt)) = find_tool_confirmation(&message) {
@@ -2293,6 +2293,17 @@ fn message_has_text(message: &Message) -> bool {
     message.content.iter().any(
         |content| matches!(content, MessageContent::Text(text) if !text.text.trim().is_empty()),
     )
+}
+
+/// Whether the message carries any meaningful agent output (text or tool call).
+/// Used to timestamp the first token of a response, even when the model goes
+/// straight to tool calls without emitting any text.
+fn message_has_output(message: &Message) -> bool {
+    message_has_text(message)
+        || message
+            .content
+            .iter()
+            .any(|content| matches!(content, MessageContent::ToolRequest(_)))
 }
 
 fn print_run_stats(
