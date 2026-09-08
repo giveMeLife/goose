@@ -1416,79 +1416,6 @@ fn shorten_path(path: &str, debug: bool) -> String {
     shortened.join("/")
 }
 
-pub fn display_session_info(
-    resume: bool,
-    provider: &str,
-    model: &str,
-    session_id: &Option<String>,
-) {
-    set_terminal_title();
-
-    let status = if resume {
-        "resuming"
-    } else if session_id.is_none() {
-        "ephemeral"
-    } else {
-        "new session"
-    };
-
-    let model_display = model.to_string();
-
-    let cwd_display = std::env::current_dir()
-        .ok()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    // ASCII art goose with session info on the right
-    println!();
-    println!(
-        "  {}  {} {} {} {} {}",
-        style("  __( O)>").white(),
-        style("●").green(),
-        style(status).dim(),
-        style("·").dim(),
-        style(provider).dim(),
-        style(&model_display).cyan(),
-    );
-
-    if let Some(id) = session_id {
-        println!(
-            "  {}  {} {} {}",
-            style(r" \____)").white(),
-            style(" ").dim(),
-            style(id).dim(),
-            style(format!("· {}", cwd_display)).dim(),
-        );
-    } else {
-        println!(
-            "  {}  {} {}",
-            style(r" \____)").white(),
-            style(" ").dim(),
-            style(format!("  {}", cwd_display)).dim(),
-        );
-    }
-    println!(
-        "  {}  {}",
-        style("   L L").white(),
-        style("   goose is ready").white()
-    );
-}
-
-fn set_terminal_title() {
-    if !std::io::stdout().is_terminal() {
-        return;
-    }
-    let dir_name = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_default();
-    // Sanitize: strip control characters (ESC, BEL, etc.) to prevent terminal escape injection
-    let sanitized: String = dir_name.chars().filter(|c| !c.is_control()).collect();
-    // OSC 0 sets the terminal window/tab title
-    print!("\x1b]0;🪿 {}\x07", sanitized);
-    let _ = std::io::stdout().flush();
-}
-
 /// ASCII goose by Joan Stark (jgs) — https://asciiart.website/art/275
 const GOOSE_ASCII: &str = r#"
        \_\_
@@ -1500,17 +1427,30 @@ jgs  \\  ~=- /
    ~^~^~^~^~^~^~^
 "#;
 
-pub fn display_goose_banner(model: &str) {
+pub fn format_goose_banner_details(
+    version: &str,
+    provider: &str,
+    model: &str,
+    state: &str,
+    session_id: &str,
+    cwd: &str,
+) -> String {
+    format!("🪿 goose v{version} │ {state} │ {provider} │ {model}\n   {session_id} │ {cwd}")
+}
+
+pub fn display_goose_banner(info: &super::SessionDisplayInfo, session_id: &str) {
     use console::style;
 
     println!("{}", style(GOOSE_ASCII).cyan());
     println!(
-        "  {} {}",
-        style("🪿 goose").cyan().bold(),
-        style(format!(
-            "v{} │ {} │ session: nueva",
+        "  {}",
+        style(format_goose_banner_details(
             env!("CARGO_PKG_VERSION"),
-            model
+            &info.provider,
+            &info.model,
+            &info.state,
+            session_id,
+            &info.cwd,
         ))
         .dim()
     );
@@ -1598,7 +1538,7 @@ pub fn display_cost_usage(provider: &str, model: &str, usage: &Usage) {
     }
 }
 
-pub fn render_session_status_line(
+pub fn format_session_status_line(
     model: &str,
     provider: &str,
     total_tokens: usize,
@@ -1606,9 +1546,7 @@ pub fn render_session_status_line(
     tokens_per_second: Option<f64>,
     ttft_secs: Option<f64>,
     session_cost: Option<f64>,
-) {
-    use console::style;
-
+) -> String {
     fn fmt_tokens(n: usize) -> String {
         if n >= 1_000_000 {
             format!("{:.2}M", n as f64 / 1_000_000.0)
@@ -1624,47 +1562,68 @@ pub fn render_session_status_line(
     } else {
         (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100)
     };
+    let mut parts = vec![
+        model.to_string(),
+        provider.to_string(),
+        format!(
+            "{}/{} ({}%)",
+            fmt_tokens(total_tokens),
+            fmt_tokens(context_limit),
+            percentage
+        ),
+    ];
+    if let Some(rate) = tokens_per_second {
+        parts.push(format!("{rate:.1} tps"));
+    }
+    if let Some(ttft) = ttft_secs {
+        parts.push(format!("ttft {ttft:.2}s"));
+    }
+    if let Some(cost) = session_cost {
+        parts.push(format!("${cost:.4} sesión"));
+    }
+    parts.join(" │ ")
+}
+
+pub fn render_session_status_line(
+    model: &str,
+    provider: &str,
+    total_tokens: usize,
+    context_limit: usize,
+    tokens_per_second: Option<f64>,
+    ttft_secs: Option<f64>,
+    session_cost: Option<f64>,
+) {
+    use console::style;
+
+    let percentage = if context_limit == 0 {
+        0
+    } else {
+        (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100)
+    };
     let bar_width = 10;
     let filled = ((percentage as f64 / 100.0) * bar_width as f64).round() as usize;
-    let filled = filled.min(bar_width);
-    let bar = format!("{}{}", "━".repeat(filled), "╌".repeat(bar_width - filled));
-    let bar_colored = if percentage < 50 {
+    let bar = format!(
+        "{}{}",
+        "━".repeat(filled.min(bar_width)),
+        "╌".repeat(bar_width - filled.min(bar_width))
+    );
+    let bar = if percentage < 50 {
         style(bar).green().dim()
     } else if percentage < 85 {
         style(bar).yellow()
     } else {
         style(bar).red()
     };
-
-    let mut parts = vec![
-        format!("{}", style(model).cyan()),
-        format!("{}", style(provider).dim()),
-        format!(
-            "{} {}",
-            bar_colored,
-            style(format!(
-                "{}/{} ({}%)",
-                fmt_tokens(total_tokens),
-                fmt_tokens(context_limit),
-                percentage
-            ))
-            .dim()
-        ),
-    ];
-    if let Some(rate) = tokens_per_second {
-        parts.push(format!("{}", style(format!("{:.1} tps", rate)).dim()));
-    }
-    if let Some(ttft) = ttft_secs {
-        parts.push(format!("{}", style(format!("ttft {:.2}s", ttft)).dim()));
-    }
-    if let Some(cost) = session_cost {
-        parts.push(format!("{}", style(format!("${:.4} sesión", cost)).dim()));
-    }
-    println!(
-        "  {} {}",
-        style("🪿").dim(),
-        parts.join(&format!(" {} ", style("│").dim()))
+    let line = format_session_status_line(
+        model,
+        provider,
+        total_tokens,
+        context_limit,
+        tokens_per_second,
+        ttft_secs,
+        session_cost,
     );
+    println!("  {} {} {}", style("🪿").dim(), bar, style(line).dim());
 }
 
 pub struct McpSpinners {
@@ -1792,6 +1751,53 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+
+    #[test]
+    fn goose_banner_details_include_session_metadata() {
+        let details = format_goose_banner_details(
+            "1.48.0",
+            "openrouter",
+            "openai/gpt-5.6-sol",
+            "new session",
+            "20260908_9",
+            "/Users/example/project",
+        );
+
+        assert!(details.contains("openrouter"));
+        assert!(details.contains("openai/gpt-5.6-sol"));
+        assert!(details.contains("new session"));
+        assert!(details.contains("20260908_9"));
+        assert!(details.contains("/Users/example/project"));
+    }
+
+    #[test]
+    fn status_line_shows_active_context_model_and_provider() {
+        let line = format_session_status_line(
+            "openai/gpt-5.6-sol",
+            "openrouter",
+            10_000,
+            1_000_000,
+            Some(42.8),
+            Some(0.41),
+            Some(0.0031),
+        );
+
+        assert!(line.contains("openai/gpt-5.6-sol"));
+        assert!(line.contains("openrouter"));
+        assert!(line.contains("10k/1.00M (1%)"));
+        assert!(line.contains("42.8 tps"));
+        assert!(line.contains("ttft 0.41s"));
+        assert!(line.contains("$0.0031 sesión"));
+    }
+
+    #[test]
+    fn status_line_omits_unavailable_turn_metrics() {
+        let line = format_session_status_line("model", "provider", 0, 128_000, None, None, None);
+
+        assert!(!line.contains("tps"));
+        assert!(!line.contains("ttft"));
+        assert!(!line.contains("sesión"));
+    }
 
     #[test]
     fn recent_lines_accumulate_across_updates() {

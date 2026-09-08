@@ -249,6 +249,13 @@ impl HistoryManager {
     }
 }
 
+pub struct SessionDisplayInfo {
+    pub provider: String,
+    pub model: String,
+    pub state: String,
+    pub cwd: String,
+}
+
 pub struct CliSession {
     agent: Arc<Agent>,
     messages: Conversation,
@@ -262,6 +269,7 @@ pub struct CliSession {
     retry_config: Option<RetryConfig>,
     output_format: String,
     stats: bool,
+    display_info: SessionDisplayInfo,
     /// Background extension loader; drained exclusively by
     /// [`CliSession::ensure_extensions_loaded`], the session's single loading
     /// gate.
@@ -362,6 +370,7 @@ impl CliSession {
         retry_config: Option<RetryConfig>,
         output_format: String,
         stats: bool,
+        display_info: SessionDisplayInfo,
         refresh_completions: bool,
         extension_loading: Option<AbortOnDropHandle<Vec<ExtensionFailure>>>,
     ) -> Self {
@@ -401,6 +410,7 @@ impl CliSession {
             retry_config,
             output_format,
             stats,
+            display_info,
             extension_loading,
             loading_announced: false,
         }
@@ -627,9 +637,7 @@ impl CliSession {
 
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
-        if let Ok(model_config) = self.agent.model_config_for_session(&self.session_id).await {
-            output::display_goose_banner(&model_config.model_name);
-        }
+        output::display_goose_banner(&self.display_info, &self.session_id);
         let _banners = self
             .agent
             .emit_hook_with_banners(goose::hooks::HookEvent::SessionStart, &self.session_id)
@@ -2120,7 +2128,7 @@ impl CliSession {
             .get_session()
             .await
             .ok()
-            .and_then(|m| m.usage.total_tokens.or(m.accumulated_usage.total_tokens))
+            .and_then(|m| m.usage.total_tokens)
             .unwrap_or(0) as usize;
 
         let session_cost = self
@@ -2132,9 +2140,7 @@ impl CliSession {
             .ok()
             .and_then(|t| t.accumulated_cost);
 
-        let provider_name = Config::global()
-            .get_goose_provider()
-            .unwrap_or_else(|_| "unknown".to_string());
+        let provider_name = &self.display_info.provider;
 
         let stats = usage.and_then(|u| u.stats.as_ref());
         let output_tokens = usage
@@ -2159,7 +2165,7 @@ impl CliSession {
 
         output::render_session_status_line(
             &model_config.model_name,
-            &provider_name,
+            provider_name,
             total_tokens,
             context_limit,
             tps,
@@ -3562,6 +3568,12 @@ mod tests {
             None,
             "text".to_string(),
             false,
+            SessionDisplayInfo {
+                provider: "test".to_string(),
+                model: "stub-model".to_string(),
+                state: "new session".to_string(),
+                cwd: "test".to_string(),
+            },
             refresh_completions,
             extension_loading,
         )
