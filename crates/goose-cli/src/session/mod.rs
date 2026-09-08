@@ -627,6 +627,9 @@ impl CliSession {
 
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
+        if let Ok(model_config) = self.agent.model_config_for_session(&self.session_id).await {
+            output::display_goose_banner(&model_config.model_name);
+        }
         let banners = self
             .agent
             .emit_hook_with_banners(goose::hooks::HookEvent::SessionStart, &self.session_id)

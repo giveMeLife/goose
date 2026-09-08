@@ -1489,6 +1489,34 @@ fn set_terminal_title() {
     let _ = std::io::stdout().flush();
 }
 
+/// ASCII goose by Joan Stark (jgs) — https://asciiart.website/art/275
+const GOOSE_ASCII: &str = r#"
+       \_\_
+     >(' )
+       )/
+      /(
+     /  \`----/
+jgs  \\  ~=- /
+   ~^~^~^~^~^~^~^
+"#;
+
+pub fn display_goose_banner(model: &str) {
+    use console::style;
+
+    println!("{}", style(GOOSE_ASCII).cyan());
+    println!(
+        "  {} {}",
+        style("🪿 goose").cyan().bold(),
+        style(format!(
+            "v{} │ {} │ session: nueva",
+            env!("CARGO_PKG_VERSION"),
+            model
+        ))
+        .dim()
+    );
+    println!();
+}
+
 pub fn display_banner(banners: &[String]) {
     for banner in banners {
         for line in banner.lines() {
