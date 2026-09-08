@@ -1428,6 +1428,14 @@ const GOOSE_ASCII: &str = r#"
    -----~~'----
 "#;
 
+fn compact_banner_path(path: &str, home: &str) -> String {
+    match path.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(suffix) if suffix.starts_with('/') => format!("~{suffix}"),
+        _ => path.to_string(),
+    }
+}
+
 pub fn format_goose_banner_details(
     version: &str,
     provider: &str,
@@ -1435,8 +1443,14 @@ pub fn format_goose_banner_details(
     state: &str,
     session_id: &str,
     cwd: &str,
-) -> String {
-    format!("🪿 goose v{version} │ {state} │ {provider} │ {model}\n   {session_id} │ {cwd}")
+) -> [String; 3] {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cwd = compact_banner_path(cwd, &home);
+    [
+        format!("goose · v{version}"),
+        format!("● {provider} / {model} · {state}"),
+        format!("{session_id} · {cwd}"),
+    ]
 }
 
 fn goose_banner_body_color(theme: Theme) -> Color {
@@ -1459,18 +1473,30 @@ pub fn display_goose_banner(info: &super::SessionDisplayInfo, session_id: &str) 
             println!("{}", style(line).fg(body_color));
         }
     }
-    println!(
-        "  {}",
-        style(format_goose_banner_details(
-            env!("CARGO_PKG_VERSION"),
-            &info.provider,
-            &info.model,
-            &info.state,
-            session_id,
-            &info.cwd,
-        ))
-        .dim()
+    let [product, _connection, location] = format_goose_banner_details(
+        env!("CARGO_PKG_VERSION"),
+        &info.provider,
+        &info.model,
+        &info.state,
+        session_id,
+        &info.cwd,
     );
+    println!(
+        "  {} {} {}",
+        style("goose").fg(body_color).bold(),
+        style("·").dim(),
+        style(product.strip_prefix("goose · ").unwrap_or(&product)).dim(),
+    );
+    println!(
+        "  {} {} {} {} {} {}",
+        style("●").green(),
+        style(&info.provider).dim(),
+        style("/").dim(),
+        style(&info.model).cyan(),
+        style("·").dim(),
+        style(&info.state).fg(Color::Color256(208)),
+    );
+    println!("  {}", style(location).dim());
     println!();
 }
 
@@ -1777,21 +1803,33 @@ mod tests {
     }
 
     #[test]
-    fn goose_banner_details_include_session_metadata() {
-        let details = format_goose_banner_details(
+    fn compact_banner_path_replaces_home_prefix() {
+        assert_eq!(
+            compact_banner_path("/Users/example/projects/goose", "/Users/example"),
+            "~/projects/goose"
+        );
+        assert_eq!(
+            compact_banner_path("/tmp/goose", "/Users/example"),
+            "/tmp/goose"
+        );
+    }
+
+    #[test]
+    fn banner_metadata_contains_three_compact_lines() {
+        let home = std::env::var("HOME").unwrap();
+        let cwd = format!("{home}/projects/goose");
+        let lines = format_goose_banner_details(
             "1.48.0",
-            "openrouter",
-            "openai/gpt-5.6-sol",
+            "huawei_maas",
+            "glm-5.2",
             "new session",
-            "20260908_9",
-            "/Users/example/project",
+            "20260908_15",
+            &cwd,
         );
 
-        assert!(details.contains("openrouter"));
-        assert!(details.contains("openai/gpt-5.6-sol"));
-        assert!(details.contains("new session"));
-        assert!(details.contains("20260908_9"));
-        assert!(details.contains("/Users/example/project"));
+        assert_eq!(lines[0], "goose · v1.48.0");
+        assert_eq!(lines[1], "● huawei_maas / glm-5.2 · new session");
+        assert_eq!(lines[2], "20260908_15 · ~/projects/goose");
     }
 
     #[test]
