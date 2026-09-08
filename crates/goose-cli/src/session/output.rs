@@ -1517,14 +1517,6 @@ pub fn display_goose_banner(model: &str) {
     println!();
 }
 
-pub fn display_banner(banners: &[String]) {
-    for banner in banners {
-        for line in banner.lines() {
-            println!("{}", line);
-        }
-    }
-}
-
 pub fn display_context_usage(total_tokens: usize, context_limit: usize) {
     use console::style;
 
@@ -1608,18 +1600,31 @@ pub fn display_cost_usage(provider: &str, model: &str, usage: &Usage) {
 
 pub fn render_session_status_line(
     model: &str,
+    provider: &str,
     total_tokens: usize,
     context_limit: usize,
+    tokens_per_second: Option<f64>,
+    ttft_secs: Option<f64>,
     session_cost: Option<f64>,
 ) {
     use console::style;
+
+    fn fmt_tokens(n: usize) -> String {
+        if n >= 1_000_000 {
+            format!("{:.2}M", n as f64 / 1_000_000.0)
+        } else if n >= 1_000 {
+            format!("{}k", n / 1_000)
+        } else {
+            n.to_string()
+        }
+    }
 
     let percentage = if context_limit == 0 {
         0
     } else {
         (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100)
     };
-    let bar_width = 12;
+    let bar_width = 10;
     let filled = ((percentage as f64 / 100.0) * bar_width as f64).round() as usize;
     let filled = filled.min(bar_width);
     let bar = format!("{}{}", "━".repeat(filled), "╌".repeat(bar_width - filled));
@@ -1631,11 +1636,35 @@ pub fn render_session_status_line(
         style(bar).red()
     };
 
-    let mut line = format!("{} {}% ctx │ {}", bar_colored, percentage, model);
-    if let Some(cost) = session_cost {
-        line = format!("{} │ ${:.4} sesión", line, cost);
+    let mut parts = vec![
+        format!("{}", style(model).cyan()),
+        format!("{}", style(provider).dim()),
+        format!(
+            "{} {}",
+            bar_colored,
+            style(format!(
+                "{}/{} ({}%)",
+                fmt_tokens(total_tokens),
+                fmt_tokens(context_limit),
+                percentage
+            ))
+            .dim()
+        ),
+    ];
+    if let Some(rate) = tokens_per_second {
+        parts.push(format!("{}", style(format!("{:.1} tps", rate)).dim()));
     }
-    println!("  {} {}", style("🪿").dim(), style(line).dim());
+    if let Some(ttft) = ttft_secs {
+        parts.push(format!("{}", style(format!("ttft {:.2}s", ttft)).dim()));
+    }
+    if let Some(cost) = session_cost {
+        parts.push(format!("{}", style(format!("${:.4} sesión", cost)).dim()));
+    }
+    println!(
+        "  {} {}",
+        style("🪿").dim(),
+        parts.join(&format!(" {} ", style("│").dim()))
+    );
 }
 
 pub struct McpSpinners {

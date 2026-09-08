@@ -630,13 +630,10 @@ impl CliSession {
         if let Ok(model_config) = self.agent.model_config_for_session(&self.session_id).await {
             output::display_goose_banner(&model_config.model_name);
         }
-        let banners = self
+        let _banners = self
             .agent
             .emit_hook_with_banners(goose::hooks::HookEvent::SessionStart, &self.session_id)
             .await;
-        if !banners.is_empty() {
-            output::display_banner(&banners);
-        }
 
         let result = self.run_interactive(prompt).await;
 
@@ -685,8 +682,6 @@ impl CliSession {
             {
                 self.ensure_extensions_loaded(true).await?;
             }
-
-            self.display_context_usage().await?;
 
             let conversation_strings: Vec<String> = self
                 .messages
@@ -1844,7 +1839,8 @@ impl CliSession {
             if self.stats {
                 print_run_stats(run_started, first_token_at, last_usage.as_ref());
             }
-            self.display_session_status().await;
+            self.display_session_status(run_started, first_token_at, last_usage.as_ref())
+                .await;
         }
 
         Ok(())
@@ -2097,7 +2093,12 @@ impl CliSession {
 
     /// One-line status summary after each agent response: model, context
     /// usage, and session cost.
-    async fn display_session_status(&self) {
+    async fn display_session_status(
+        &self,
+        run_started: Instant,
+        first_token_at: Option<Instant>,
+        usage: Option<&ProviderUsage>,
+    ) {
         if self.output_format == "json" || self.output_format == "stream-json" {
             return;
         }
@@ -2119,13 +2120,8 @@ impl CliSession {
             .get_session()
             .await
             .ok()
-            .map(|m| {
-                m.accumulated_usage
-                    .total_tokens
-                    .or(m.usage.total_tokens)
-                    .unwrap_or(0) as usize
-            })
-            .unwrap_or(0);
+            .and_then(|m| m.usage.total_tokens.or(m.accumulated_usage.total_tokens))
+            .unwrap_or(0) as usize;
 
         let session_cost = self
             .agent
@@ -2136,10 +2132,38 @@ impl CliSession {
             .ok()
             .and_then(|t| t.accumulated_cost);
 
+        let provider_name = Config::global()
+            .get_goose_provider()
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let stats = usage.and_then(|u| u.stats.as_ref());
+        let output_tokens = usage
+            .and_then(|u| u.usage.output_tokens)
+            .and_then(|t| usize::try_from(t).ok());
+        let gen_elapsed = stats
+            .and_then(|s| s.elapsed_ms)
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| run_started.elapsed());
+        let tps = output_tokens.map(|tokens| {
+            let secs = gen_elapsed.as_secs_f64();
+            if secs > 0.0 {
+                tokens as f64 / secs
+            } else {
+                0.0
+            }
+        });
+        let ttft_secs = stats
+            .and_then(|s| s.time_to_first_token_ms)
+            .map(|ms| ms as f64 / 1000.0)
+            .or_else(|| first_token_at.map(|f| f.duration_since(run_started).as_secs_f64()));
+
         output::render_session_status_line(
             &model_config.model_name,
+            &provider_name,
             total_tokens,
             context_limit,
+            tps,
+            ttft_secs,
             session_cost,
         );
     }
