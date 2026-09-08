@@ -1416,15 +1416,16 @@ fn shorten_path(path: &str, debug: bool) -> String {
     shortened.join("/")
 }
 
-/// ASCII goose by Joan Stark (jgs) — https://asciiart.website/art/275
+/// ASCII goose by Joan Stark (jgs) — https://asciiart.website/art/276
 const GOOSE_ASCII: &str = r#"
-       \_\_
-     >(' )
-       )/
-      /(
-     /  \`----/
-jgs  \\  ~=- /
-   ~^~^~^~^~^~^~^
+      __
+    >(' )
+      )/   ,
+     /(____/\
+    /        )
+    \ `  =~~/
+     `---Y-'
+   -----~~'----
 "#;
 
 pub fn format_goose_banner_details(
