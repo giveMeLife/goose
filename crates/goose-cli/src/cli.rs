@@ -2094,7 +2094,9 @@ async fn handle_interactive_session(args: InteractiveSessionArgs) -> Result<()> 
         quiet: false,
         output_format: "text".to_string(),
         container: session_opts.container.map(Container::new),
-        stats: false,
+        stats: Config::global()
+            .get_param::<bool>("GOOSE_CLI_SHOW_STATS")
+            .unwrap_or(false),
     })
     .await;
 
@@ -2309,7 +2311,10 @@ async fn handle_run_command(
         quiet: output_opts.quiet,
         output_format: output_opts.output_format,
         container: session_opts.container.map(Container::new),
-        stats: run_behavior.stats,
+        stats: run_behavior.stats
+            || Config::global()
+                .get_param::<bool>("GOOSE_CLI_SHOW_STATS")
+                .unwrap_or(false),
     })
     .await;
 

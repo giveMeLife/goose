@@ -1,7 +1,9 @@
 use crate::cli::StreamableHttpOptions;
 
 use super::output;
-use super::{derive_extension_name_from_command, split_extension_name_prefix, CliSession};
+use super::{
+    derive_extension_name_from_command, split_extension_name_prefix, CliSession, SessionDisplayInfo,
+};
 use console::style;
 use goose::agents::{Agent, Container, ExtensionError};
 use goose::config::extensions::name_to_key;
@@ -867,6 +869,19 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         recipe.and_then(|r| r.retry.clone()),
         session_config.output_format.clone(),
         session_config.stats,
+        SessionDisplayInfo {
+            provider: effective_provider_name.clone(),
+            model: effective_model_name.clone(),
+            state: if session_config.resume {
+                "resuming"
+            } else {
+                "new session"
+            }
+            .to_string(),
+            cwd: std::env::current_dir()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "unknown".to_string()),
+        },
         session_config.interactive,
         Some(loading_handle),
     )
@@ -874,14 +889,6 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     configure_session_prompts(&session, config, &session_config).await;
 
-    if !session_config.quiet {
-        output::display_session_info(
-            session_config.resume,
-            &effective_provider_name,
-            &effective_model_name,
-            &Some(session_id),
-        );
-    }
     session
 }
 

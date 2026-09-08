@@ -215,7 +215,7 @@ pub fn get_input(
                 InputResult::Exit
             });
         }
-        return Ok(InputResult::Message(trimmed.to_string()));
+        return Ok(InputResult::Message(expand_at_paths(trimmed)));
     }
 
     // Handle slash commands
@@ -501,7 +501,12 @@ Navigation:
 Enter - Send message
 Ctrl+{newline_key} - Add a newline (configurable via GOOSE_CLI_NEWLINE_KEY)
 Ctrl+C - Clear current line if text is entered, otherwise exit the session
-Up/Down arrows - Navigate through command history"
+Up/Down arrows - Navigate through command history
+
+File references:
+@<path> - Reference a file, folder, or subagent. Type @ and press Tab to list matches.
+          Files are expanded to absolute paths on send (e.g. @src/main.rs -> /home/user/project/src/main.rs).
+          Subagent mentions like @coder are kept as-is."
     )
 }
 
@@ -532,6 +537,51 @@ pub(super) fn extract_recent_messages(conversation_messages: Option<&Vec<String>
     }
 }
 
+/// Expand `@path` tokens in a string to absolute file paths.
+///
+/// Tokens that start with `@` are resolved relative to the current working
+/// directory. If the path does not resolve to an existing file or directory,
+/// the original `@path` text is kept unchanged.
+fn expand_at_paths(input: &str) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '@' {
+            let mut path_str = String::new();
+            while let Some(&next_ch) = chars.peek() {
+                if next_ch.is_whitespace() {
+                    break;
+                }
+                path_str.push(next_ch);
+                chars.next();
+            }
+
+            if path_str.is_empty() {
+                result.push('@');
+            } else {
+                let resolved = if std::path::Path::new(&path_str).is_absolute() {
+                    std::path::PathBuf::from(&path_str)
+                } else {
+                    cwd.join(&path_str)
+                };
+
+                if resolved.exists() {
+                    result.push_str(&resolved.to_string_lossy());
+                } else {
+                    result.push('@');
+                    result.push_str(&path_str);
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// Print help information about editor input
 fn print_editor_help() {
     println!(
@@ -549,6 +599,61 @@ fn print_editor_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_at_paths_no_at_sign() {
+        assert_eq!(expand_at_paths("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_expand_at_paths_bare_at() {
+        assert_eq!(expand_at_paths("hello @ world"), "hello @ world");
+    }
+
+    #[test]
+    fn test_expand_at_paths_nonexistent_file() {
+        let result = expand_at_paths("check @nonexistent/file.txt");
+        assert_eq!(result, "check @nonexistent/file.txt");
+    }
+
+    #[test]
+    fn test_expand_at_paths_existing_file() {
+        let cwd = std::env::current_dir().unwrap();
+        let test_file = "Cargo.toml";
+        let result = expand_at_paths(&format!("check @{test_file}"));
+        assert_eq!(result, format!("check {}", cwd.join(test_file).display()));
+    }
+
+    #[test]
+    fn test_expand_at_paths_multiple_mentions() {
+        let cwd = std::env::current_dir().unwrap();
+        let result = expand_at_paths("@Cargo.toml and @Cargo.toml");
+        assert_eq!(
+            result,
+            format!(
+                "{} and {}",
+                cwd.join("Cargo.toml").display(),
+                cwd.join("Cargo.toml").display()
+            )
+        );
+    }
+
+    #[test]
+    fn test_expand_at_paths_at_start_of_string() {
+        let cwd = std::env::current_dir().unwrap();
+        let result = expand_at_paths("@Cargo.toml");
+        assert_eq!(result, cwd.join("Cargo.toml").to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_expand_at_paths_with_text_after() {
+        let cwd = std::env::current_dir().unwrap();
+        let result = expand_at_paths("@Cargo.toml is the file");
+        assert_eq!(
+            result,
+            format!("{} is the file", cwd.join("Cargo.toml").display())
+        );
+    }
 
     #[test]
     fn test_handle_slash_command() {

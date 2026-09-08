@@ -1416,85 +1416,88 @@ fn shorten_path(path: &str, debug: bool) -> String {
     shortened.join("/")
 }
 
-pub fn display_session_info(
-    resume: bool,
+/// ASCII goose by Joan Stark (jgs) — https://asciiart.website/art/276
+const GOOSE_ASCII: &str = r#"
+      __
+    >(' )
+      )/   ,
+     /(____/\
+    /        )
+    \ `  =~~/
+     `---Y-'
+   -----~~'----
+"#;
+
+fn compact_banner_path(path: &str, home: &str) -> String {
+    match path.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(suffix) if suffix.starts_with('/') => format!("~{suffix}"),
+        _ => path.to_string(),
+    }
+}
+
+pub fn format_goose_banner_details(
+    version: &str,
     provider: &str,
     model: &str,
-    session_id: &Option<String>,
-) {
-    set_terminal_title();
-
-    let status = if resume {
-        "resuming"
-    } else if session_id.is_none() {
-        "ephemeral"
-    } else {
-        "new session"
-    };
-
-    let model_display = model.to_string();
-
-    let cwd_display = std::env::current_dir()
-        .ok()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    // ASCII art goose with session info on the right
-    println!();
-    println!(
-        "  {}  {} {} {} {} {}",
-        style("  __( O)>").white(),
-        style("●").green(),
-        style(status).dim(),
-        style("·").dim(),
-        style(provider).dim(),
-        style(&model_display).cyan(),
-    );
-
-    if let Some(id) = session_id {
-        println!(
-            "  {}  {} {} {}",
-            style(r" \____)").white(),
-            style(" ").dim(),
-            style(id).dim(),
-            style(format!("· {}", cwd_display)).dim(),
-        );
-    } else {
-        println!(
-            "  {}  {} {}",
-            style(r" \____)").white(),
-            style(" ").dim(),
-            style(format!("  {}", cwd_display)).dim(),
-        );
-    }
-    println!(
-        "  {}  {}",
-        style("   L L").white(),
-        style("   goose is ready").white()
-    );
+    state: &str,
+    session_id: &str,
+    cwd: &str,
+) -> [String; 3] {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cwd = compact_banner_path(cwd, &home);
+    [
+        format!("goose · v{version}"),
+        format!("● {provider} / {model} · {state}"),
+        format!("{session_id} · {cwd}"),
+    ]
 }
 
-fn set_terminal_title() {
-    if !std::io::stdout().is_terminal() {
-        return;
+fn goose_banner_body_color(theme: Theme) -> Color {
+    match theme {
+        Theme::Light => Color::Black,
+        Theme::Dark | Theme::Ansi => Color::White,
     }
-    let dir_name = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_default();
-    // Sanitize: strip control characters (ESC, BEL, etc.) to prevent terminal escape injection
-    let sanitized: String = dir_name.chars().filter(|c| !c.is_control()).collect();
-    // OSC 0 sets the terminal window/tab title
-    print!("\x1b]0;🪿 {}\x07", sanitized);
-    let _ = std::io::stdout().flush();
 }
 
-pub fn display_banner(banners: &[String]) {
-    for banner in banners {
-        for line in banner.lines() {
-            println!("{}", line);
+pub fn display_goose_banner(info: &super::SessionDisplayInfo, session_id: &str) {
+    use console::style;
+
+    let body_color = goose_banner_body_color(get_theme());
+    for line in GOOSE_ASCII.lines() {
+        if let Some(remainder) = line.strip_prefix("    >") {
+            print!("{}", style("    ").fg(body_color));
+            print!("{}", style(">").fg(Color::Color256(208)));
+            println!("{}", style(remainder).fg(body_color));
+        } else {
+            println!("{}", style(line).fg(body_color));
         }
     }
+    let [product, _connection, location] = format_goose_banner_details(
+        env!("CARGO_PKG_VERSION"),
+        &info.provider,
+        &info.model,
+        &info.state,
+        session_id,
+        &info.cwd,
+    );
+    println!(
+        "  {} {} {}",
+        style("goose").fg(body_color).bold(),
+        style("·").dim(),
+        style(product.strip_prefix("goose · ").unwrap_or(&product)).dim(),
+    );
+    println!(
+        "  {} {} {} {} {} {}",
+        style("●").green(),
+        style(&info.provider).dim(),
+        style("/").dim(),
+        style(&info.model).cyan(),
+        style("·").dim(),
+        style(&info.state).fg(Color::Color256(208)),
+    );
+    println!("  {}", style(location).dim());
+    println!();
 }
 
 pub fn display_context_usage(total_tokens: usize, context_limit: usize) {
@@ -1578,11 +1581,214 @@ pub fn display_cost_usage(provider: &str, model: &str, usage: &Usage) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusColor {
+    Orange,
+    Cyan,
+    Mauve,
+    Green,
+    Yellow,
+    Red,
+    Peach,
+}
+
+#[derive(Debug, Clone)]
+struct StatusSegment {
+    text: String,
+    color: StatusColor,
+    required: bool,
+}
+
+struct StatusLineData<'a> {
+    model: &'a str,
+    provider: &'a str,
+    total_tokens: usize,
+    context_limit: usize,
+    tokens_per_second: Option<f64>,
+    ttft_secs: Option<f64>,
+    session_cost: Option<f64>,
+}
+
+fn format_status_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+fn context_status_color(percentage: usize) -> StatusColor {
+    if percentage < 50 {
+        StatusColor::Green
+    } else if percentage < 85 {
+        StatusColor::Yellow
+    } else {
+        StatusColor::Red
+    }
+}
+
+fn ttft_status_color(ttft_secs: f64) -> StatusColor {
+    if ttft_secs < 3.0 {
+        StatusColor::Green
+    } else if ttft_secs <= 6.0 {
+        StatusColor::Yellow
+    } else {
+        StatusColor::Red
+    }
+}
+
+fn join_status_segments(segments: &[StatusSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" │ ")
+}
+
+fn truncate_status_model(model: &str, max_width: usize) -> String {
+    if measure_text_width(model) <= max_width {
+        return model.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    let mut truncated = String::new();
+    for ch in model.chars() {
+        if measure_text_width(&truncated) + measure_text_width(&ch.to_string()) + 1 > max_width {
+            break;
+        }
+        truncated.push(ch);
+    }
+    format!("{truncated}…")
+}
+
+fn status_line_segments(width: usize, data: StatusLineData<'_>) -> Vec<StatusSegment> {
+    let percentage = if data.context_limit == 0 {
+        0
+    } else {
+        (((data.total_tokens as f64 / data.context_limit as f64) * 100.0).round() as usize).min(100)
+    };
+    let context = format!(
+        "{}/{} ({}%)",
+        format_status_tokens(data.total_tokens),
+        format_status_tokens(data.context_limit),
+        percentage
+    );
+    let mut segments = vec![
+        StatusSegment {
+            text: "🪿".to_string(),
+            color: StatusColor::Orange,
+            required: true,
+        },
+        StatusSegment {
+            text: data.model.to_string(),
+            color: StatusColor::Cyan,
+            required: true,
+        },
+        StatusSegment {
+            text: data.provider.to_string(),
+            color: StatusColor::Mauve,
+            required: false,
+        },
+        StatusSegment {
+            text: context,
+            color: context_status_color(percentage),
+            required: true,
+        },
+    ];
+    if let Some(tps) = data.tokens_per_second {
+        segments.push(StatusSegment {
+            text: format!("{tps:.1} tps"),
+            color: StatusColor::Green,
+            required: false,
+        });
+    }
+    if let Some(ttft) = data.ttft_secs {
+        segments.push(StatusSegment {
+            text: format!("ttft {ttft:.2}s"),
+            color: ttft_status_color(ttft),
+            required: false,
+        });
+    }
+    if let Some(cost) = data.session_cost {
+        segments.push(StatusSegment {
+            text: format!("${cost:.4}"),
+            color: StatusColor::Peach,
+            required: false,
+        });
+    }
+
+    let max_width = width.saturating_sub(2);
+    while measure_text_width(&join_status_segments(&segments)) > max_width {
+        if let Some(index) = segments.iter().rposition(|segment| !segment.required) {
+            segments.remove(index);
+        } else {
+            break;
+        }
+    }
+    if measure_text_width(&join_status_segments(&segments)) > max_width {
+        let non_model_width = measure_text_width(&join_status_segments(&[
+            segments[0].clone(),
+            segments[2].clone(),
+        ])) + 3;
+        segments[1].text =
+            truncate_status_model(data.model, max_width.saturating_sub(non_model_width));
+    }
+    segments
+}
+
+fn status_color(color: StatusColor) -> Color {
+    match color {
+        StatusColor::Orange => Color::Color256(208),
+        StatusColor::Cyan => Color::Cyan,
+        StatusColor::Mauve => Color::Magenta,
+        StatusColor::Green => Color::Green,
+        StatusColor::Yellow => Color::Yellow,
+        StatusColor::Red => Color::Red,
+        StatusColor::Peach => Color::Color256(216),
+    }
+}
+
+pub fn render_session_status_line(
+    model: &str,
+    provider: &str,
+    total_tokens: usize,
+    context_limit: usize,
+    tokens_per_second: Option<f64>,
+    ttft_secs: Option<f64>,
+    session_cost: Option<f64>,
+) {
+    let width = Term::stdout().size().1 as usize;
+    let segments = status_line_segments(
+        width,
+        StatusLineData {
+            model,
+            provider,
+            total_tokens,
+            context_limit,
+            tokens_per_second,
+            ttft_secs,
+            session_cost,
+        },
+    );
+    print!("  ");
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            print!("{}", style(" │ ").dim());
+        }
+        print!("{}", style(&segment.text).fg(status_color(segment.color)));
+    }
+    println!();
+}
+
 pub struct McpSpinners {
     bars: HashMap<String, ProgressBar>,
     log_spinner: Option<ProgressBar>,
     shell_output_lines: VecDeque<String>,
     multi_bar: MultiProgress,
+    subagent_bars: HashMap<String, ProgressBar>,
 }
 
 impl McpSpinners {
@@ -1592,7 +1798,37 @@ impl McpSpinners {
             log_spinner: None,
             shell_output_lines: VecDeque::new(),
             multi_bar: MultiProgress::new(),
+            subagent_bars: HashMap::new(),
         }
+    }
+
+    /// Update (or create) a persistent status line for a subagent, replacing
+    /// the previous per-action println spam with a single line per subagent
+    /// that refreshes in place. On `done`, the line is finalized and kept.
+    pub fn update_subagent(&mut self, subagent_id: &str, message: &str, done: bool) {
+        if done {
+            if let Some(bar) = self.subagent_bars.remove(subagent_id) {
+                bar.finish_with_message(format!("✔ {}", message));
+            }
+            return;
+        }
+        let bar = self
+            .subagent_bars
+            .entry(subagent_id.to_string())
+            .or_insert_with(|| {
+                let bar = self.multi_bar.add(
+                    ProgressBar::new_spinner()
+                        .with_style(
+                            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                                .unwrap()
+                                .tick_chars("⠋⠙⠚⠛⠓⠒⠊⠉"),
+                        )
+                        .with_message(message.to_string()),
+                );
+                bar.enable_steady_tick(Duration::from_millis(100));
+                bar
+            });
+        bar.set_message(message.to_string());
     }
 
     pub fn log(&mut self, message: &str) {
@@ -1672,6 +1908,116 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+
+    #[test]
+    fn goose_banner_body_color_matches_cli_theme() {
+        assert_eq!(goose_banner_body_color(Theme::Dark), console::Color::White);
+        assert_eq!(goose_banner_body_color(Theme::Light), console::Color::Black);
+        assert_eq!(goose_banner_body_color(Theme::Ansi), console::Color::White);
+    }
+
+    #[test]
+    fn compact_banner_path_replaces_home_prefix() {
+        assert_eq!(
+            compact_banner_path("/Users/example/projects/goose", "/Users/example"),
+            "~/projects/goose"
+        );
+        assert_eq!(
+            compact_banner_path("/tmp/goose", "/Users/example"),
+            "/tmp/goose"
+        );
+    }
+
+    #[test]
+    fn banner_metadata_contains_three_compact_lines() {
+        let home = std::env::var("HOME").unwrap();
+        let cwd = format!("{home}/projects/goose");
+        let lines = format_goose_banner_details(
+            "1.48.0",
+            "huawei_maas",
+            "glm-5.2",
+            "new session",
+            "20260908_15",
+            &cwd,
+        );
+
+        assert_eq!(lines[0], "goose · v1.48.0");
+        assert_eq!(lines[1], "● huawei_maas / glm-5.2 · new session");
+        assert_eq!(lines[2], "20260908_15 · ~/projects/goose");
+    }
+
+    #[test]
+    fn status_line_drops_optional_segments_before_wrapping() {
+        let segments = status_line_segments(
+            45,
+            StatusLineData {
+                model: "openai/gpt-5.6-sol",
+                provider: "openrouter",
+                total_tokens: 10_000,
+                context_limit: 1_000_000,
+                tokens_per_second: Some(42.8),
+                ttft_secs: Some(0.41),
+                session_cost: Some(0.0031),
+            },
+        );
+        let text = join_status_segments(&segments);
+
+        assert!(text.contains("openai/gpt-5.6-sol"));
+        assert!(text.contains("10k/1.00M (1%)"));
+        assert!(!text.contains("$0.0031"));
+        assert!(!text.contains("42.8 tps"));
+    }
+
+    #[test]
+    fn status_line_ttft_colors_follow_thresholds() {
+        assert_eq!(ttft_status_color(2.9), StatusColor::Green);
+        assert_eq!(ttft_status_color(3.0), StatusColor::Yellow);
+        assert_eq!(ttft_status_color(6.0), StatusColor::Yellow);
+        assert_eq!(ttft_status_color(6.1), StatusColor::Red);
+    }
+
+    #[test]
+    fn status_line_shows_active_context_model_and_provider() {
+        let line = join_status_segments(&status_line_segments(
+            usize::MAX,
+            StatusLineData {
+                model: "openai/gpt-5.6-sol",
+                provider: "openrouter",
+                total_tokens: 10_000,
+                context_limit: 1_000_000,
+                tokens_per_second: Some(42.8),
+                ttft_secs: Some(0.41),
+                session_cost: Some(0.0031),
+            },
+        ));
+
+        assert!(line.contains("openai/gpt-5.6-sol"));
+        assert!(line.contains("openrouter"));
+        assert!(line.contains("10k/1.00M (1%)"));
+        assert!(line.contains("42.8 tps"));
+        assert!(line.contains("ttft 0.41s"));
+        assert!(line.contains("$0.0031"));
+    }
+
+    #[test]
+    fn status_line_omits_unavailable_turn_metrics() {
+        let line = join_status_segments(&status_line_segments(
+            usize::MAX,
+            StatusLineData {
+                model: "model",
+                provider: "provider",
+                total_tokens: 0,
+                context_limit: 128_000,
+                tokens_per_second: None,
+                ttft_secs: None,
+                session_cost: None,
+            },
+        ));
+
+        assert!(!line.contains("tps"));
+        assert!(!line.contains("ttft"));
+        assert!(!line.contains("sesión"));
+    }
 
     #[test]
     fn recent_lines_accumulate_across_updates() {

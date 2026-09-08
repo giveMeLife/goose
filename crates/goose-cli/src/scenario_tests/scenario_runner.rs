@@ -4,7 +4,7 @@ use goose::conversation::Conversation;
 use crate::scenario_tests::message_generator::MessageGenerator;
 use crate::scenario_tests::mock_client::weather_client;
 use crate::scenario_tests::provider_configs::{get_provider_configs, ProviderConfig};
-use crate::session::CliSession;
+use crate::session::{CliSession, SessionDisplayInfo};
 use anyhow::Result;
 use goose::agents::{Agent, AgentConfig, GoosePlatform};
 use goose::config::permission::PermissionManager;
@@ -259,6 +259,12 @@ where
         None,
         "text".to_string(),
         false,
+        SessionDisplayInfo {
+            provider: "test".to_string(),
+            model: "stub-model".to_string(),
+            state: "new session".to_string(),
+            cwd: "test".to_string(),
+        },
         false,
         None,
     )

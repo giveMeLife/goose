@@ -249,6 +249,13 @@ impl HistoryManager {
     }
 }
 
+pub struct SessionDisplayInfo {
+    pub provider: String,
+    pub model: String,
+    pub state: String,
+    pub cwd: String,
+}
+
 pub struct CliSession {
     agent: Arc<Agent>,
     messages: Conversation,
@@ -262,6 +269,7 @@ pub struct CliSession {
     retry_config: Option<RetryConfig>,
     output_format: String,
     stats: bool,
+    display_info: SessionDisplayInfo,
     /// Background extension loader; drained exclusively by
     /// [`CliSession::ensure_extensions_loaded`], the session's single loading
     /// gate.
@@ -362,6 +370,7 @@ impl CliSession {
         retry_config: Option<RetryConfig>,
         output_format: String,
         stats: bool,
+        display_info: SessionDisplayInfo,
         refresh_completions: bool,
         extension_loading: Option<AbortOnDropHandle<Vec<ExtensionFailure>>>,
     ) -> Self {
@@ -401,6 +410,7 @@ impl CliSession {
             retry_config,
             output_format,
             stats,
+            display_info,
             extension_loading,
             loading_announced: false,
         }
@@ -627,13 +637,11 @@ impl CliSession {
 
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
-        let banners = self
+        output::display_goose_banner(&self.display_info, &self.session_id);
+        let _banners = self
             .agent
             .emit_hook_with_banners(goose::hooks::HookEvent::SessionStart, &self.session_id)
             .await;
-        if !banners.is_empty() {
-            output::display_banner(&banners);
-        }
 
         let result = self.run_interactive(prompt).await;
 
@@ -683,8 +691,6 @@ impl CliSession {
                 self.ensure_extensions_loaded(true).await?;
             }
 
-            self.display_context_usage().await?;
-
             let conversation_strings: Vec<String> = self
                 .messages
                 .user_visible_messages()
@@ -714,7 +720,7 @@ impl CliSession {
         &self,
     ) -> Result<rustyline::Editor<GooseCompleter, rustyline::history::DefaultHistory>> {
         let builder =
-            rustyline::Config::builder().completion_type(rustyline::CompletionType::Circular);
+            rustyline::Config::builder().completion_type(rustyline::CompletionType::Fuzzy);
         let builder = match self.edit_mode {
             Some(mode) => builder.edit_mode(mode),
             None => builder.edit_mode(EditMode::Emacs),
@@ -1583,7 +1589,7 @@ impl CliSession {
                 result = stream.next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
-                            if first_token_at.is_none() && message_has_text(&message) {
+                            if first_token_at.is_none() && message_has_output(&message) {
                                 first_token_at = Some(Instant::now());
                             }
                             if let Some((id, security_prompt)) = find_tool_confirmation(&message) {
@@ -1841,6 +1847,8 @@ impl CliSession {
             if self.stats {
                 print_run_stats(run_started, first_token_at, last_usage.as_ref());
             }
+            self.display_session_status(run_started, first_token_at, last_usage.as_ref())
+                .await;
         }
 
         Ok(())
@@ -2091,6 +2099,81 @@ impl CliSession {
         Ok(metadata.accumulated_usage.total_tokens)
     }
 
+    /// One-line status summary after each agent response: model, context
+    /// usage, and session cost.
+    async fn display_session_status(
+        &self,
+        run_started: Instant,
+        first_token_at: Option<Instant>,
+        usage: Option<&ProviderUsage>,
+    ) {
+        if self.output_format == "json" || self.output_format == "stream-json" {
+            return;
+        }
+        if !std::io::stdout().is_terminal() {
+            return;
+        }
+        let Ok(model_config) = self.agent.model_config_for_session(&self.session_id).await else {
+            return;
+        };
+        let Ok(provider) = self.agent.provider().await else {
+            return;
+        };
+        let context_limit =
+            goose::context_limit::get_context_limit(provider.as_ref(), &model_config.model_name)
+                .await
+                .unwrap_or_else(|_| model_config.context_limit());
+
+        let total_tokens = self
+            .get_session()
+            .await
+            .ok()
+            .and_then(|m| m.usage.total_tokens)
+            .unwrap_or(0) as usize;
+
+        let session_cost = self
+            .agent
+            .config
+            .session_manager
+            .get_session_usage_totals(&self.session_id)
+            .await
+            .ok()
+            .and_then(|t| t.accumulated_cost);
+
+        let provider_name = &self.display_info.provider;
+
+        let stats = usage.and_then(|u| u.stats.as_ref());
+        let output_tokens = usage
+            .and_then(|u| u.usage.output_tokens)
+            .and_then(|t| usize::try_from(t).ok());
+        let gen_elapsed = stats
+            .and_then(|s| s.elapsed_ms)
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| run_started.elapsed());
+        let tps = output_tokens.map(|tokens| {
+            let secs = gen_elapsed.as_secs_f64();
+            if secs > 0.0 {
+                tokens as f64 / secs
+            } else {
+                0.0
+            }
+        });
+        let ttft_secs = stats
+            .and_then(|s| s.time_to_first_token_ms)
+            .map(|ms| ms as f64 / 1000.0)
+            .or_else(|| first_token_at.map(|f| f.duration_since(run_started).as_secs_f64()));
+
+        output::render_session_status_line(
+            &model_config.model_name,
+            provider_name,
+            total_tokens,
+            context_limit,
+            tps,
+            ttft_secs,
+            session_cost,
+        );
+    }
+
     /// Display enhanced context usage with session totals
     pub async fn display_context_usage(&self) -> Result<()> {
         let provider = self.agent.provider().await?;
@@ -2293,6 +2376,17 @@ fn message_has_text(message: &Message) -> bool {
     message.content.iter().any(
         |content| matches!(content, MessageContent::Text(text) if !text.text.trim().is_empty()),
     )
+}
+
+/// Whether the message carries any meaningful agent output (text or tool call).
+/// Used to timestamp the first token of a response, even when the model goes
+/// straight to tool calls without emitting any text.
+fn message_has_output(message: &Message) -> bool {
+    message_has_text(message)
+        || message
+            .content
+            .iter()
+            .any(|content| matches!(content, MessageContent::ToolRequest(_)))
 }
 
 fn print_run_stats(
@@ -2529,6 +2623,14 @@ fn handle_mcp_notification(
                             });
                             return;
                         }
+                        if interactive && !is_json_mode {
+                            progress_bars.update_subagent(
+                                subagent_id,
+                                &output::format_subagent_tool_call_message(subagent_id, tool_name),
+                                false,
+                            );
+                            return;
+                        }
                         if !is_json_mode {
                             output::render_subagent_tool_call(
                                 subagent_id,
@@ -2715,12 +2817,10 @@ fn display_log_notification(
     interactive: bool,
     is_json_mode: bool,
 ) {
-    if subagent_id.is_some() {
-        if interactive {
-            let _ = progress_bars.hide();
-            if !is_json_mode {
-                println!("{}", console::style(formatted_message).green().dim());
-            }
+    if let Some(sid) = subagent_id {
+        let done = matches!(notification_type, Some("completed") | Some("terminated"));
+        if interactive && !is_json_mode {
+            progress_bars.update_subagent(sid, formatted_message, done);
         } else if !is_json_mode {
             progress_bars.log(formatted_message);
         }
@@ -3468,6 +3568,12 @@ mod tests {
             None,
             "text".to_string(),
             false,
+            SessionDisplayInfo {
+                provider: "test".to_string(),
+                model: "stub-model".to_string(),
+                state: "new session".to_string(),
+                cwd: "test".to_string(),
+            },
             refresh_completions,
             extension_loading,
         )
