@@ -1751,6 +1751,153 @@ fn status_color(color: StatusColor) -> Color {
     }
 }
 
+fn usage_tokens(value: i32) -> String {
+    format_status_tokens(value.max(0) as usize)
+}
+
+pub fn render_usage_report(
+    session_id: &str,
+    context_tokens: usize,
+    context_limit: usize,
+    totals: Option<&goose::session::session_manager::SessionUsageTotals>,
+    groups: &[goose::session::session_manager::ModelProviderUsage],
+    last_response: Option<&super::LastResponseStats>,
+) {
+    let percentage = if context_limit == 0 {
+        0
+    } else {
+        ((context_tokens as f64 / context_limit as f64) * 100.0).round() as usize
+    };
+    let context_color = status_color(context_status_color(percentage));
+    println!(
+        "\n{}",
+        style(format!("Usage · session {session_id}")).cyan().bold()
+    );
+    println!("  {} {}", style("●").green(), style("session total").dim());
+    if let Some(totals) = totals {
+        let usage = &totals.accumulated_usage;
+        let cost = totals
+            .accumulated_cost
+            .map(|value| format!("${value:.4}"))
+            .unwrap_or_else(|| "unknown".to_string());
+        println!(
+            "  {} {}",
+            style("cost").dim(),
+            style(cost).fg(Color::Color256(216))
+        );
+        println!(
+            "  {} {} · {} {} · {} {}",
+            style("tokens").dim(),
+            style(usage_tokens(usage.total_tokens.unwrap_or(0))).blue(),
+            style("input").dim(),
+            style(usage_tokens(usage.input_tokens.unwrap_or(0))).blue(),
+            style("output").dim(),
+            style(usage_tokens(usage.output_tokens.unwrap_or(0))).blue()
+        );
+        println!(
+            "  {} {} {} · {} {}",
+            style("cache").dim(),
+            style("read").dim(),
+            style(usage_tokens(usage.cache_read_input_tokens.unwrap_or(0))).cyan(),
+            style("write").dim(),
+            style(usage_tokens(usage.cache_write_input_tokens.unwrap_or(0))).cyan()
+        );
+    } else {
+        println!("  {}", style("session totals unavailable").dim());
+    }
+    println!(
+        "  {} {} / {} ({percentage}%)",
+        style("context").dim(),
+        style(format_status_tokens(context_tokens)).fg(context_color),
+        style(format_status_tokens(context_limit)).fg(context_color)
+    );
+
+    println!(
+        "\n{}",
+        style("── last response ─────────────────────────").cyan()
+    );
+    if let Some(stats) = last_response {
+        let ttft = stats
+            .ttft_secs
+            .map(|value| format!("{value:.2}s"))
+            .unwrap_or_else(|| "unavailable".to_string());
+        let ttft_color = stats
+            .ttft_secs
+            .map(ttft_status_color)
+            .map(status_color)
+            .unwrap_or(Color::White);
+        println!("  {} {}", style("ttft").dim(), style(ttft).fg(ttft_color));
+        let tps = stats
+            .tokens_per_second
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".to_string());
+        println!("  {} {}", style("tps").dim(), style(tps).green());
+        println!(
+            "  {} {} · {} {:.2}s",
+            style("output").dim(),
+            style(
+                stats
+                    .output_tokens
+                    .map(format_status_tokens)
+                    .unwrap_or_else(|| "unavailable".to_string())
+            )
+            .blue(),
+            style("elapsed").dim(),
+            stats.elapsed_secs
+        );
+    } else {
+        println!("  {}", style("unavailable in this CLI session").dim());
+    }
+
+    println!(
+        "\n{}",
+        style("── by model / provider ───────────────────").cyan()
+    );
+    let known_cost = totals.and_then(|value| value.accumulated_cost);
+    if groups.is_empty() {
+        println!("  {}", style("No persisted usage yet").dim());
+    }
+    for group in groups {
+        println!(
+            "  {} {} {}",
+            style(&group.model).cyan(),
+            style("/").dim(),
+            style(&group.provider).magenta()
+        );
+        let cost = group
+            .cost
+            .map(|value| format!("${value:.4}"))
+            .unwrap_or_else(|| "unknown".to_string());
+        let percentage = match (group.cost, known_cost) {
+            (Some(cost), Some(total)) if total > 0.0 => format!(" · {:.1}%", cost / total * 100.0),
+            _ => String::new(),
+        };
+        println!(
+            "  {}{}",
+            style(cost).fg(Color::Color256(216)),
+            style(percentage).dim()
+        );
+        println!(
+            "  {} {} · {} {} · {} {}",
+            style("input").dim(),
+            style(usage_tokens(group.input_tokens)).blue(),
+            style("output").dim(),
+            style(usage_tokens(group.output_tokens)).blue(),
+            style("total").dim(),
+            style(usage_tokens(group.total_tokens)).blue()
+        );
+        println!(
+            "  {} {} {} · {} {}",
+            style("cache").dim(),
+            style("read").dim(),
+            style(usage_tokens(group.cache_read_tokens)).cyan(),
+            style("write").dim(),
+            style(usage_tokens(group.cache_write_tokens)).cyan()
+        );
+    }
+    println!();
+}
+
 pub fn render_session_status_line(
     model: &str,
     provider: &str,

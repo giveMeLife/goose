@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 16;
+pub const CURRENT_SCHEMA_VERSION: i32 = 17;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 const MILLISECOND_TIMESTAMP_THRESHOLD: i64 = 10_000_000_000;
@@ -180,6 +180,18 @@ pub struct SessionInsights {
 pub struct SessionUsageTotals {
     pub accumulated_usage: Usage,
     pub accumulated_cost: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelProviderUsage {
+    pub model: String,
+    pub provider: String,
+    pub input_tokens: i32,
+    pub output_tokens: i32,
+    pub total_tokens: i32,
+    pub cache_read_tokens: i32,
+    pub cache_write_tokens: i32,
+    pub cost: Option<f64>,
 }
 
 impl<'a> SessionUpdateBuilder<'a> {
@@ -504,6 +516,13 @@ impl SessionManager {
 
     pub async fn get_session_usage_totals(&self, id: &str) -> Result<SessionUsageTotals> {
         self.storage.get_session_usage_totals(id).await
+    }
+
+    pub async fn get_session_usage_by_model_provider(
+        &self,
+        id: &str,
+    ) -> Result<Vec<ModelProviderUsage>> {
+        self.storage.get_session_usage_by_model_provider(id).await
     }
 
     pub async fn record_usage_metrics(
@@ -891,6 +910,7 @@ async fn insert_usage_ledger_row(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     session_id: &str,
     model: Option<&str>,
+    provider_name: Option<&str>,
     usage: &MessageUsage,
 ) -> Result<()> {
     let cost_source = usage.cost_source.map(|cs| match cs {
@@ -901,16 +921,17 @@ async fn insert_usage_ledger_row(
     sqlx::query(
         r#"
         INSERT INTO usage_ledger (
-            session_id, created_timestamp, model,
+            session_id, created_timestamp, model, provider_name,
             input_tokens, output_tokens, total_tokens,
             cache_read_tokens, cache_write_tokens,
             cost, cost_source, is_compaction
         )
-        VALUES (?, strftime('%s','now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, strftime('%s','now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(session_id)
     .bind(model)
+    .bind(provider_name)
     .bind(usage.input_tokens)
     .bind(usage.output_tokens)
     .bind(usage.total_tokens)
@@ -1069,6 +1090,7 @@ impl SessionStorage {
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                 created_timestamp INTEGER NOT NULL,
                 model TEXT,
+                provider_name TEXT,
                 input_tokens INTEGER,
                 output_tokens INTEGER,
                 total_tokens INTEGER,
@@ -1589,6 +1611,19 @@ impl SessionStorage {
                 )
                 .execute(&mut **tx)
                 .await?;
+            }
+            17 => {
+                let has_provider_name = sqlx::query_scalar::<_, i32>(
+                    "SELECT COUNT(*) FROM pragma_table_info('usage_ledger') WHERE name = 'provider_name'",
+                )
+                .fetch_one(&mut **tx)
+                .await?
+                    > 0;
+                if !has_provider_name {
+                    sqlx::query("ALTER TABLE usage_ledger ADD COLUMN provider_name TEXT")
+                        .execute(&mut **tx)
+                        .await?;
+                }
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
@@ -2290,12 +2325,12 @@ impl SessionStorage {
         sqlx::query(
             r#"
             INSERT INTO usage_ledger (
-                session_id, created_timestamp,
+                session_id, created_timestamp, provider_name,
                 input_tokens, output_tokens, total_tokens,
                 cache_read_tokens, cache_write_tokens,
                 cost, cost_source
             )
-            SELECT s.id, strftime('%s','now'),
+            SELECT s.id, strftime('%s','now'), s.provider_name,
                    MAX(COALESCE(s.accumulated_input_tokens, 0) - l.input_sum, 0),
                    MAX(COALESCE(s.accumulated_output_tokens, 0) - l.output_sum, 0),
                    MAX(COALESCE(s.accumulated_total_tokens, 0) - l.total_sum, 0),
@@ -2360,10 +2395,88 @@ impl SessionStorage {
         .execute(&mut *tx)
         .await?;
 
-        insert_usage_ledger_row(&mut tx, session_id, Some(model), ledger).await?;
+        let provider_name = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT provider_name FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+        insert_usage_ledger_row(
+            &mut tx,
+            session_id,
+            Some(model),
+            provider_name.as_deref(),
+            ledger,
+        )
+        .await?;
 
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn get_session_usage_by_model_provider(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ModelProviderUsage>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                Option<f64>,
+            ),
+        >(
+            r#"
+            WITH RECURSIVE tree(id) AS (
+                SELECT id FROM sessions WHERE id = ?
+                UNION
+                SELECT s.id FROM sessions s JOIN tree ON s.parent_session_id = tree.id
+            )
+            SELECT COALESCE(u.model, 'unknown'), COALESCE(u.provider_name, 'unknown'),
+                   COALESCE(SUM(u.input_tokens), 0), COALESCE(SUM(u.output_tokens), 0),
+                   COALESCE(SUM(u.total_tokens), 0), COALESCE(SUM(u.cache_read_tokens), 0),
+                   COALESCE(SUM(u.cache_write_tokens), 0), SUM(u.cost)
+            FROM usage_ledger u JOIN sessions s ON s.id = u.session_id
+            WHERE u.session_id IN (SELECT id FROM tree)
+            GROUP BY u.model, u.provider_name
+            HAVING COALESCE(SUM(u.total_tokens), 0) > 0 OR SUM(u.cost) IS NOT NULL
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        let clamp = |value: i64| i32::try_from(value).unwrap_or(i32::MAX);
+        let mut usage = rows
+            .into_iter()
+            .map(
+                |(model, provider, input, output, total, cache_read, cache_write, cost)| {
+                    ModelProviderUsage {
+                        model: model.unwrap_or_else(|| "unknown".to_string()),
+                        provider: provider.unwrap_or_else(|| "unknown".to_string()),
+                        input_tokens: clamp(input),
+                        output_tokens: clamp(output),
+                        total_tokens: clamp(total),
+                        cache_read_tokens: clamp(cache_read),
+                        cache_write_tokens: clamp(cache_write),
+                        cost,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        usage.sort_by(|a, b| {
+            b.cost
+                .unwrap_or(0.0)
+                .total_cmp(&a.cost.unwrap_or(0.0))
+                .then_with(|| b.total_tokens.cmp(&a.total_tokens))
+        });
+        Ok(usage)
     }
 
     async fn get_session_usage_totals(&self, session_id: &str) -> Result<SessionUsageTotals> {
@@ -4605,7 +4718,7 @@ mod tests {
     ) -> Result<()> {
         let pool = sm.storage().pool().await?;
         let mut tx = pool.begin().await?;
-        insert_usage_ledger_row(&mut tx, session_id, None, usage).await?;
+        insert_usage_ledger_row(&mut tx, session_id, None, None, usage).await?;
         tx.commit().await?;
         Ok(())
     }

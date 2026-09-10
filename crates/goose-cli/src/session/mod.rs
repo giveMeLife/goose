@@ -256,6 +256,14 @@ pub struct SessionDisplayInfo {
     pub cwd: String,
 }
 
+#[derive(Debug, Clone)]
+struct LastResponseStats {
+    ttft_secs: Option<f64>,
+    tokens_per_second: Option<f64>,
+    output_tokens: Option<usize>,
+    elapsed_secs: f64,
+}
+
 pub struct CliSession {
     agent: Arc<Agent>,
     messages: Conversation,
@@ -275,6 +283,7 @@ pub struct CliSession {
     /// gate.
     extension_loading: Option<AbortOnDropHandle<Result<Vec<ExtensionFailure>>>>,
     loading_announced: bool,
+    last_response_stats: Option<LastResponseStats>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +422,7 @@ impl CliSession {
             display_info,
             extension_loading,
             loading_announced: false,
+            last_response_stats: None,
         }
     }
 
@@ -763,6 +773,10 @@ impl CliSession {
                     Ok(_) => output::render_builtin_success(&names),
                     Err(e) => output::render_builtin_error(&names, &e.to_string()),
                 }
+            }
+            InputResult::Usage => {
+                history.save(editor);
+                self.display_usage_report().await;
             }
             InputResult::ToggleTheme => {
                 history.save(editor);
@@ -1844,6 +1858,29 @@ impl CliSession {
             });
         } else {
             println!();
+            let stats = last_usage.as_ref().and_then(|usage| usage.stats.as_ref());
+            let response_elapsed = stats
+                .and_then(|s| s.elapsed_ms)
+                .map(|ms| Duration::from_millis(ms).as_secs_f64())
+                .unwrap_or_else(|| run_started.elapsed().as_secs_f64());
+            let response_output_tokens = last_usage
+                .as_ref()
+                .and_then(|u| u.usage.output_tokens)
+                .and_then(|tokens| usize::try_from(tokens).ok());
+            let response_tps = response_output_tokens.and_then(|tokens| {
+                (response_elapsed > 0.0).then_some(tokens as f64 / response_elapsed)
+            });
+            self.last_response_stats = Some(LastResponseStats {
+                ttft_secs: stats
+                    .and_then(|s| s.time_to_first_token_ms)
+                    .map(|ms| ms as f64 / 1000.0)
+                    .or_else(|| {
+                        first_token_at.map(|first| first.duration_since(run_started).as_secs_f64())
+                    }),
+                tokens_per_second: response_tps,
+                output_tokens: response_output_tokens,
+                elapsed_secs: response_elapsed,
+            });
             if self.stats {
                 print_run_stats(run_started, first_token_at, last_usage.as_ref());
             }
@@ -2097,6 +2134,51 @@ impl CliSession {
     pub async fn get_total_token_usage(&self) -> Result<Option<i32>> {
         let metadata = self.get_session().await?;
         Ok(metadata.accumulated_usage.total_tokens)
+    }
+
+    async fn display_usage_report(&self) {
+        let session = match self.get_session().await {
+            Ok(session) => session,
+            Err(error) => {
+                output::render_error(&error.to_string());
+                return;
+            }
+        };
+        let model_config = match self.agent.model_config_for_session(&self.session_id).await {
+            Ok(config) => config,
+            Err(_) => {
+                output::render_error("Usage unavailable: no active model");
+                return;
+            }
+        };
+        let provider = match self.agent.provider().await {
+            Ok(provider) => provider,
+            Err(_) => {
+                output::render_error("Usage unavailable: no active provider");
+                return;
+            }
+        };
+        let context_limit =
+            goose::context_limit::get_context_limit(provider.as_ref(), &model_config.model_name)
+                .await
+                .unwrap_or_else(|_| model_config.context_limit());
+        let manager = &self.agent.config.session_manager;
+        let totals = manager
+            .get_session_usage_totals(&self.session_id)
+            .await
+            .ok();
+        let groups = manager
+            .get_session_usage_by_model_provider(&self.session_id)
+            .await
+            .unwrap_or_default();
+        output::render_usage_report(
+            &self.session_id,
+            session.usage.total_tokens.unwrap_or(0) as usize,
+            context_limit,
+            totals.as_ref(),
+            &groups,
+            self.last_response_stats.as_ref(),
+        );
     }
 
     /// One-line status summary after each agent response: model, context

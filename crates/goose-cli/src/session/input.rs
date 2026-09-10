@@ -34,6 +34,7 @@ pub enum InputResult {
     Edit(Option<String>),
     ListSkills,
     LoadSkills(Vec<String>),
+    Usage,
 }
 
 #[derive(Debug)]
@@ -255,6 +256,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
             print_editor_help();
             Some(InputResult::Retry)
         }
+        "/usage" => Some(InputResult::Usage),
         "/t" => Some(InputResult::ToggleTheme),
         s if s.starts_with("/t ") => {
             let t = s
@@ -473,6 +475,7 @@ fn help_text() -> String {
 /t - Toggle Light/Dark/Ansi theme
 /t <name> - Set theme directly (light, dark, ansi)
 /r - Toggle full tool output display (show complete tool parameters without truncation)
+/usage - Show detailed session usage and cost by model/provider
 /extension <command> - Add a stdio extension (format: ENV1=val1 command args...)
 /builtin <names> - Add builtin extensions by name (comma-separated)
 /prompts [--extension <name>] - List all available prompts, optionally filtered by extension
@@ -676,6 +679,12 @@ mod tests {
             handle_slash_command("/?"),
             Some(InputResult::Retry)
         ));
+
+        assert!(matches!(
+            handle_slash_command("/usage"),
+            Some(InputResult::Usage)
+        ));
+        assert!(handle_slash_command("/usage extra").is_none());
 
         // Test theme toggle
         assert!(matches!(
