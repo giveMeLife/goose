@@ -2124,12 +2124,16 @@ impl CliSession {
                 .await
                 .unwrap_or_else(|_| model_config.context_limit());
 
-        let total_tokens = self
+        let (total_tokens, provider_name) = self
             .get_session()
             .await
-            .ok()
-            .and_then(|m| m.usage.total_tokens)
-            .unwrap_or(0) as usize;
+            .map(|session| {
+                (
+                    session.usage.total_tokens.unwrap_or(0) as usize,
+                    status_provider_name(session.provider_name, &self.display_info.provider),
+                )
+            })
+            .unwrap_or_else(|_| (0, self.display_info.provider.clone()));
 
         let session_cost = self
             .agent
@@ -2139,8 +2143,6 @@ impl CliSession {
             .await
             .ok()
             .and_then(|t| t.accumulated_cost);
-
-        let provider_name = &self.display_info.provider;
 
         let stats = usage.and_then(|u| u.stats.as_ref());
         let output_tokens = usage
@@ -2165,7 +2167,7 @@ impl CliSession {
 
         output::render_session_status_line(
             &model_config.model_name,
-            provider_name,
+            &provider_name,
             total_tokens,
             context_limit,
             tps,
@@ -3000,6 +3002,10 @@ fn build_switched_model_config(
         .map_err(|e| anyhow::anyhow!("Failed to create model configuration: {e}"))
 }
 
+fn status_provider_name(current: Option<String>, startup: &str) -> String {
+    current.unwrap_or_else(|| startup.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3268,6 +3274,15 @@ mod tests {
             derive_extension_name_from_command("/usr/local/bin/srv", &[]),
             "srv"
         );
+    }
+
+    #[test]
+    fn status_provider_prefers_current_session_provider() {
+        assert_eq!(
+            status_provider_name(Some("openrouter".to_string()), "huawei_maas"),
+            "openrouter"
+        );
+        assert_eq!(status_provider_name(None, "huawei_maas"), "huawei_maas");
     }
 
     #[test]

@@ -38,6 +38,33 @@ Or install the CLI:
 curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash
 ```
 
+## Install this customized CLI
+
+This fork's `main` branch includes personal CLI enhancements: `@` fuzzy file and
+subagent completion, terminal UI customizations, response usage telemetry, and
+additional canonical model metadata.
+
+```bash
+git clone https://github.com/giveMeLife/goose.git
+cd goose
+source bin/activate-hermit
+cargo build --release -p goose-cli
+
+mkdir -p ~/.local/bin
+ln -sfn "$PWD/target/release/goose" ~/.local/bin/goose
+```
+
+Make sure `~/.local/bin` is in your shell's `PATH`, then verify:
+
+```bash
+goose --version
+goose session
+```
+
+The `goose` command is a symlink to your local release build. After updating or
+changing this fork, rebuild with `cargo build --release -p goose-cli`; the
+command will use the rebuilt binary automatically.
+
 # Quick links
 - [Quickstart](https://goose-docs.ai/docs/quickstart)
 - [Installation](https://goose-docs.ai/docs/getting-started/installation)
