@@ -28,8 +28,9 @@ It displays:
 │ tps      31.8                 │
 │ cost     $0.0083              │
 │ ── cost by model ──────────── │
-│ glm-5.2             $0.0021  │
-│ gpt-5.6-sol         $0.0062  │
+│ glm-5.2 / huawei_maas $0.0021│
+│ gpt-5.6-sol / openrouter     │
+│                     $0.0062  │
 └───────────────────────────────┘
 ```
 
@@ -37,7 +38,7 @@ It displays:
 - On first model output, display live TTFT.
 - On usage events and response completion, refresh context, TPS, total cost, and the cost breakdown.
 - Model/provider must reflect session-level `/model --provider ...` switches.
-- The cost breakdown aggregates known costs by provider/model across the current session tree, including subagent child sessions. Entries sort descending by cost and show at most three; remaining entries are summarized as `+N more`.
+- The cost breakdown aggregates known costs by provider/model across the current session tree, including subagent child sessions. Every entry displays the **model followed by its provider** (for example, `glm-5.2 / huawei_maas`), so identical model names from different providers remain distinguishable. Entries sort descending by cost and show at most three; remaining entries are summarized as `+N more`.
 
 ## Rendering architecture
 
