@@ -79,7 +79,7 @@ Expected: compile failure because method/type do not exist.
 
 - [ ] **Step 3: Implement grouped query**
 
-Reuse `WITH RECURSIVE tree(id)` from `get_session_usage_totals`. Join each `usage_ledger` row to its session to obtain `provider_name`; group by ledger `model` and session provider. Sum every token field and `cost`. Retain rows with nonzero tokens even if cost is null. Sort in Rust by descending `cost.unwrap_or(0.0)`, then descending `total_tokens`; use `i32::try_from` with `i32::MAX` saturation exactly as current totals code does.
+First add a backward-compatible SQLite migration adding nullable `provider_name TEXT` to `usage_ledger`, and pass the active session provider into `record_usage_metrics`/`insert_usage_ledger_row` so every new ledger row preserves its provider. Reuse `WITH RECURSIVE tree(id)` from `get_session_usage_totals`, group ledger rows by their persisted `model` and `provider_name`, rendering historical NULL providers as `unknown`. Sum every token field and `cost`. Retain rows with nonzero tokens even if cost is null. Sort in Rust by descending `cost.unwrap_or(0.0)`, then descending `total_tokens`; use `i32::try_from` with `i32::MAX` saturation exactly as current totals code does.
 
 - [ ] **Step 4: Run focused core tests**
 

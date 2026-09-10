@@ -24,6 +24,8 @@ Add an interactive `/usage` command that renders a colorized, complete usage and
 ## Data and accuracy
 
 - Totals and per-model values come from persisted session usage and ledger data, never inferred from provider pricing at render time.
+- Persist the active provider on every `usage_ledger` row. The existing session-level `provider_name` is mutable after `/model --provider`, so it cannot reliably label historical ledger rows.
+- Add a backward-compatible SQLite migration which adds nullable `usage_ledger.provider_name`. Historical rows without a persisted provider render as `unknown`; new rows use the provider active when that usage was recorded.
 - Include a provider/model group even when its cost is unknown if token usage is known; render cost as `unknown` and omit its percentage.
 - Include all session-tree descendants, so delegated subagents contribute to the same report.
 - Store last-response performance values in `CliSession` after every completed response. `/usage` does not fabricate historic TTFT/TPS when a session is resumed.
