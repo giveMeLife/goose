@@ -970,6 +970,26 @@ pub fn format_subagent_tool_call_message(subagent_id: &str, tool_name: &str) -> 
     }
 }
 
+pub fn render_subagent_activity(subagent_id: &str, tool_name: &str) {
+    let short_id = subagent_id.rsplit('_').next().unwrap_or(subagent_id);
+    let parts = ToolNameParts::from(tool_name);
+    let activity = match parts.extension_name {
+        Some(extension_name) => format!(
+            "{} · {}",
+            parts.tool_name,
+            extension_display_name(extension_name)
+        ),
+        None => parts.tool_name.to_string(),
+    };
+    println!(
+        "  {} {} {} {}",
+        style("▸").cyan(),
+        style(format!("subagent:{short_id}")).dim(),
+        style("·").dim(),
+        style(activity).dim(),
+    );
+}
+
 pub fn render_subagent_tool_call(
     subagent_id: &str,
     tool_name: &str,
@@ -1935,7 +1955,6 @@ pub struct McpSpinners {
     log_spinner: Option<ProgressBar>,
     shell_output_lines: VecDeque<String>,
     multi_bar: MultiProgress,
-    subagent_bars: HashMap<String, ProgressBar>,
 }
 
 impl McpSpinners {
@@ -1945,34 +1964,7 @@ impl McpSpinners {
             log_spinner: None,
             shell_output_lines: VecDeque::new(),
             multi_bar: MultiProgress::new(),
-            subagent_bars: HashMap::new(),
         }
-    }
-
-    pub fn update_subagent(&mut self, subagent_id: &str, message: &str, done: bool) {
-        if done {
-            if let Some(bar) = self.subagent_bars.remove(subagent_id) {
-                bar.finish_with_message(format!("✔ {message}"));
-            }
-            return;
-        }
-        let bar = self
-            .subagent_bars
-            .entry(subagent_id.to_string())
-            .or_insert_with(|| {
-                let bar = self.multi_bar.add(
-                    ProgressBar::new_spinner()
-                        .with_style(
-                            ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                                .unwrap()
-                                .tick_chars("⠋⠙⠚⠛⠓⠒⠊⠉"),
-                        )
-                        .with_message(message.to_string()),
-                );
-                bar.enable_steady_tick(Duration::from_millis(100));
-                bar
-            });
-        bar.set_message(message.to_string());
     }
 
     pub fn log(&mut self, message: &str) {
@@ -2016,10 +2008,6 @@ impl McpSpinners {
         if let Some(msg) = message {
             bar.set_message(msg.to_string());
         }
-    }
-
-    pub fn suspend<F: FnOnce()>(&self, write: F) {
-        self.multi_bar.suspend(write);
     }
 
     pub fn hide(&mut self) -> Result<(), Error> {

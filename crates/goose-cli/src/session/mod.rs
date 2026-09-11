@@ -1731,19 +1731,17 @@ impl CliSession {
                                 if is_stream_json_mode {
                                     emit_stream_event(&StreamEvent::Message { message: message.clone() });
                                 } else if !is_json_mode {
-                                    progress_bars.suspend(|| {
-                                        output::render_message_streaming(
-                                            &message,
-                                            &mut markdown_buffer,
-                                            &mut thinking_header_shown,
-                                            self.debug,
-                                        );
-                                        maybe_open_credits_top_up_url(
-                                            &message,
-                                            interactive,
-                                            &mut prompted_credits_urls,
-                                        );
-                                    });
+                                    output::render_message_streaming(
+                                        &message,
+                                        &mut markdown_buffer,
+                                        &mut thinking_header_shown,
+                                        self.debug,
+                                    );
+                                    maybe_open_credits_top_up_url(
+                                        &message,
+                                        interactive,
+                                        &mut prompted_credits_urls,
+                                    );
                                 }
                             }
                         }
@@ -2713,11 +2711,7 @@ fn handle_mcp_notification(
                             return;
                         }
                         if interactive && !is_json_mode {
-                            progress_bars.update_subagent(
-                                subagent_id,
-                                &output::format_subagent_tool_call_message(subagent_id, tool_name),
-                                false,
-                            );
+                            output::render_subagent_activity(subagent_id, tool_name);
                             return;
                         }
                         if !is_json_mode {
@@ -2907,21 +2901,18 @@ fn display_log_notification(
     is_json_mode: bool,
 ) {
     if let Some(sid) = subagent_id {
-        let done = matches!(notification_type, Some("completed") | Some("terminated"));
         if interactive && !is_json_mode {
-            progress_bars.update_subagent(sid, formatted_message, done);
+            output::render_subagent_activity(sid, formatted_message);
         } else if !is_json_mode {
             progress_bars.log(formatted_message);
         }
     } else if let Some(ntype) = notification_type {
         if ntype == TASK_EXECUTION_NOTIFICATION_TYPE {
             if !is_json_mode {
-                progress_bars.suspend(|| {
-                    for line in formatted_message.lines() {
-                        println!("    {}", console::style(line).dim());
-                    }
-                    std::io::stdout().flush().unwrap();
-                });
+                for line in formatted_message.lines() {
+                    println!("    {}", console::style(line).dim());
+                }
+                std::io::stdout().flush().unwrap();
             }
         } else if ntype == "shell_output" {
             let config = Config::global();
@@ -2931,9 +2922,7 @@ fn display_log_notification(
                 .unwrap_or(output::DEFAULT_MIN_PRIORITY);
 
             if min_priority < 0.1 && !is_json_mode {
-                progress_bars.suspend(|| {
-                    println!("    {}", console::style(formatted_message).dim());
-                });
+                println!("    {}", console::style(formatted_message).dim());
             }
         }
     } else if output::is_showing_thinking() {
