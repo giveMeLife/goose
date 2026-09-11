@@ -1726,6 +1726,7 @@ impl CliSession {
 
                                 if interactive {
                                     output::hide_thinking();
+                                    let _ = progress_bars.hide();
                                 }
 
                                 if is_stream_json_mode {
