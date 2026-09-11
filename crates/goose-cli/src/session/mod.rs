@@ -1724,18 +1724,26 @@ impl CliSession {
                                 log_tool_metrics(&message, &self.messages);
                                 self.messages.push(message.clone());
 
-                                if interactive { output::hide_thinking() };
-                                let _ = progress_bars.hide();
+                                if interactive {
+                                    output::hide_thinking();
+                                }
 
                                 if is_stream_json_mode {
                                     emit_stream_event(&StreamEvent::Message { message: message.clone() });
                                 } else if !is_json_mode {
-                                    output::render_message_streaming(&message, &mut markdown_buffer, &mut thinking_header_shown, self.debug);
-                                    maybe_open_credits_top_up_url(
-                                        &message,
-                                        interactive,
-                                        &mut prompted_credits_urls,
-                                    );
+                                    progress_bars.suspend(|| {
+                                        output::render_message_streaming(
+                                            &message,
+                                            &mut markdown_buffer,
+                                            &mut thinking_header_shown,
+                                            self.debug,
+                                        );
+                                        maybe_open_credits_top_up_url(
+                                            &message,
+                                            interactive,
+                                            &mut prompted_credits_urls,
+                                        );
+                                    });
                                 }
                             }
                         }
@@ -2692,9 +2700,6 @@ fn handle_mcp_notification(
                             .and_then(|v| v.as_object())
                             .cloned();
 
-                        if interactive {
-                            let _ = progress_bars.hide();
-                        }
                         if is_stream_json_mode {
                             emit_stream_event(&StreamEvent::Notification {
                                 extension_id: extension_id.to_string(),
@@ -2910,14 +2915,13 @@ fn display_log_notification(
         }
     } else if let Some(ntype) = notification_type {
         if ntype == TASK_EXECUTION_NOTIFICATION_TYPE {
-            if interactive {
-                let _ = progress_bars.hide();
-            }
             if !is_json_mode {
-                for line in formatted_message.lines() {
-                    println!("    {}", console::style(line).dim());
-                }
-                std::io::stdout().flush().unwrap();
+                progress_bars.suspend(|| {
+                    for line in formatted_message.lines() {
+                        println!("    {}", console::style(line).dim());
+                    }
+                    std::io::stdout().flush().unwrap();
+                });
             }
         } else if ntype == "shell_output" {
             let config = Config::global();
@@ -2926,13 +2930,10 @@ fn display_log_notification(
                 .ok()
                 .unwrap_or(output::DEFAULT_MIN_PRIORITY);
 
-            if min_priority < 0.1 {
-                if interactive {
-                    let _ = progress_bars.hide();
-                }
-                if !is_json_mode {
+            if min_priority < 0.1 && !is_json_mode {
+                progress_bars.suspend(|| {
                     println!("    {}", console::style(formatted_message).dim());
-                }
+                });
             }
         }
     } else if output::is_showing_thinking() {

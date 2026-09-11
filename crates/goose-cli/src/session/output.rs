@@ -1949,13 +1949,10 @@ impl McpSpinners {
         }
     }
 
-    /// Update (or create) a persistent status line for a subagent, replacing
-    /// the previous per-action println spam with a single line per subagent
-    /// that refreshes in place. On `done`, the line is finalized and kept.
     pub fn update_subagent(&mut self, subagent_id: &str, message: &str, done: bool) {
         if done {
             if let Some(bar) = self.subagent_bars.remove(subagent_id) {
-                bar.finish_with_message(format!("✔ {}", message));
+                bar.finish_with_message(format!("✔ {message}"));
             }
             return;
         }
@@ -1992,7 +1989,6 @@ impl McpSpinners {
             bar.enable_steady_tick(Duration::from_millis(100));
             bar
         });
-
         spinner.set_message(message.to_string());
     }
 
@@ -2022,10 +2018,14 @@ impl McpSpinners {
         }
     }
 
+    pub fn suspend<F: FnOnce()>(&self, write: F) {
+        self.multi_bar.suspend(write);
+    }
+
     pub fn hide(&mut self) -> Result<(), Error> {
-        self.bars.iter_mut().for_each(|(_, bar)| {
-            bar.disable_steady_tick();
-        });
+        self.bars
+            .iter_mut()
+            .for_each(|(_, bar)| bar.disable_steady_tick());
         if let Some(spinner) = self.log_spinner.as_mut() {
             spinner.disable_steady_tick();
         }
