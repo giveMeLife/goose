@@ -970,7 +970,7 @@ pub fn format_subagent_tool_call_message(subagent_id: &str, tool_name: &str) -> 
     }
 }
 
-pub fn render_subagent_activity(subagent_id: &str, tool_name: &str) {
+pub fn render_subagent_activity(subagent_id: &str, tool_name: &str, count: usize) {
     let short_id = subagent_id.rsplit('_').next().unwrap_or(subagent_id);
     let parts = ToolNameParts::from(tool_name);
     let activity = match parts.extension_name {
@@ -981,12 +981,18 @@ pub fn render_subagent_activity(subagent_id: &str, tool_name: &str) {
         ),
         None => parts.tool_name.to_string(),
     };
+    let suffix = if count > 1 {
+        format!(" ×{count}")
+    } else {
+        String::new()
+    };
     println!(
-        "  {} {} {} {}",
+        "  {} {} {} {}{}",
         style("▸").cyan(),
         style(format!("subagent:{short_id}")).dim(),
         style("·").dim(),
         style(activity).dim(),
+        style(suffix).dim(),
     );
 }
 

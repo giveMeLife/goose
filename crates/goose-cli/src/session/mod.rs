@@ -72,6 +72,53 @@ const SHELL_STATUS_RESERVED_WIDTH: usize = 2;
 /// built out of a whole command line has to be clipped.
 const DERIVED_EXTENSION_NAME_MAX_LEN: usize = 32;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingSubagentActivity {
+    tool_name: String,
+    count: usize,
+}
+
+#[derive(Default)]
+struct SubagentActivityAccumulator {
+    pending: HashMap<String, PendingSubagentActivity>,
+    order: Vec<String>,
+}
+
+impl SubagentActivityAccumulator {
+    fn record(&mut self, subagent_id: &str, tool_name: &str) {
+        if let Some(activity) = self.pending.get_mut(subagent_id) {
+            if activity.tool_name == tool_name {
+                activity.count += 1;
+                return;
+            }
+            self.flush_one(subagent_id);
+        }
+        self.order.push(subagent_id.to_string());
+        self.pending.insert(
+            subagent_id.to_string(),
+            PendingSubagentActivity {
+                tool_name: tool_name.to_string(),
+                count: 1,
+            },
+        );
+    }
+
+    fn flush_one(&mut self, subagent_id: &str) {
+        if let Some(activity) = self.pending.remove(subagent_id) {
+            output::render_subagent_activity(subagent_id, &activity.tool_name, activity.count);
+        }
+        self.order.retain(|id| id != subagent_id);
+    }
+
+    fn flush_all(&mut self) {
+        for id in std::mem::take(&mut self.order) {
+            if let Some(activity) = self.pending.remove(&id) {
+                output::render_subagent_activity(&id, &activity.tool_name, activity.count);
+            }
+        }
+    }
+}
+
 pub(crate) fn split_extension_name_prefix(extension_command: &str) -> (Option<String>, &str) {
     let Some((candidate, rest)) = extension_command.split_once(':') else {
         return (None, extension_command);
@@ -1596,6 +1643,7 @@ impl CliSession {
         let run_started = Instant::now();
         let mut first_token_at: Option<Instant> = None;
         let mut last_usage: Option<ProviderUsage> = None;
+        let mut subagent_activities = SubagentActivityAccumulator::default();
 
         use futures::StreamExt;
         loop {
@@ -1755,6 +1803,7 @@ impl CliSession {
                                 &extension_id,
                                 &notification,
                                 &mut progress_bars,
+                                &mut subagent_activities,
                                 is_stream_json_mode,
                                 interactive,
                                 is_json_mode,
@@ -1795,6 +1844,7 @@ impl CliSession {
 
         if !is_json_mode && !is_stream_json_mode {
             output::flush_markdown_buffer_current_theme(&mut markdown_buffer);
+            subagent_activities.flush_all();
         }
 
         if is_json_mode {
@@ -2672,11 +2722,12 @@ fn find_elicitation_request(message: &Message) -> Option<(String, String, Value)
 }
 
 /// Handle MCP notification event (logging or progress)
-#[expect(deprecated)]
+#[expect(deprecated, clippy::too_many_arguments)]
 fn handle_mcp_notification(
     extension_id: &str,
     notification: &ServerNotification,
     progress_bars: &mut output::McpSpinners,
+    subagent_activities: &mut SubagentActivityAccumulator,
     is_stream_json_mode: bool,
     interactive: bool,
     is_json_mode: bool,
@@ -2712,7 +2763,7 @@ fn handle_mcp_notification(
                             return;
                         }
                         if interactive && !is_json_mode {
-                            output::render_subagent_activity(subagent_id, tool_name);
+                            subagent_activities.record(subagent_id, tool_name);
                             return;
                         }
                         if !is_json_mode {
@@ -2744,6 +2795,7 @@ fn handle_mcp_notification(
                     subagent_id.as_deref(),
                     notif_type.as_deref(),
                     progress_bars,
+                    subagent_activities,
                     interactive,
                     is_json_mode,
                 );
@@ -2898,12 +2950,13 @@ fn display_log_notification(
     subagent_id: Option<&str>,
     notification_type: Option<&str>,
     progress_bars: &mut output::McpSpinners,
+    subagent_activities: &mut SubagentActivityAccumulator,
     interactive: bool,
     is_json_mode: bool,
 ) {
     if let Some(sid) = subagent_id {
         if interactive && !is_json_mode {
-            output::render_subagent_activity(sid, formatted_message);
+            subagent_activities.record(sid, formatted_message);
         } else if !is_json_mode {
             progress_bars.log(formatted_message);
         }
