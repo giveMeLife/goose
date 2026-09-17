@@ -5,7 +5,12 @@ import { importNostrSessionFromDeepLink } from './sessionLinks';
 import { ErrorUI } from './components/ErrorBoundary';
 import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import RecipeParamsModalContainer from './components/RecipeParamsModalContainer';
-import { isRecipeParamsCancelled, isRecipeParameterScopesUnsupported } from './acp/errors';
+import RecipeConsentModalContainer from './components/RecipeConsentModalContainer';
+import {
+  isRecipeDeclined,
+  isRecipeParamsCancelled,
+  isRecipeParameterScopesUnsupported,
+} from './acp/errors';
 import { toast, ToastContainer } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
 import TelemetryConsentPrompt from './components/TelemetryConsentPrompt';
@@ -133,7 +138,7 @@ export const PairRouteWrapper = ({
             return prev;
           });
         } catch (error) {
-          if (isRecipeParamsCancelled(error)) {
+          if (isRecipeDeclined(error) || isRecipeParamsCancelled(error)) {
             navigate('/');
             return;
           }
@@ -197,7 +202,15 @@ const SettingsRoute = () => {
     viewOptions.section = sectionFromUrl;
   }
 
-  return <SettingsView onClose={() => navigate('/')} setView={setView} viewOptions={viewOptions} />;
+  const closeSettings = () => {
+    if (location.key === 'default') {
+      navigate('/');
+    } else {
+      navigate(-1);
+    }
+  };
+
+  return <SettingsView onClose={closeSettings} setView={setView} viewOptions={viewOptions} />;
 };
 
 const SessionsRoute = () => {
@@ -258,14 +271,20 @@ const PermissionRoute = () => {
 };
 
 const ConfigureProvidersRoute = () => {
+  const location = useLocation();
   const navigate = useNavigate();
+
+  const closeProviderSettings = () => {
+    if (location.key === 'default') {
+      navigate('/settings', { replace: true, state: { section: 'models' } });
+    } else {
+      navigate(-1);
+    }
+  };
 
   return (
     <div className="w-screen h-screen bg-background-primary">
-      <ProviderSettings
-        onClose={() => navigate('/settings', { state: { section: 'models' } })}
-        isOnboarding={false}
-      />
+      <ProviderSettings onClose={closeProviderSettings} isOnboarding={false} />
     </div>
   );
 };
@@ -629,6 +648,7 @@ export function AppInner() {
         pauseOnHover
       />
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
+      <RecipeConsentModalContainer />
       <RecipeParamsModalContainer />
       <div className="relative w-screen h-screen overflow-hidden bg-background-secondary flex flex-col">
         <div className="titlebar-drag-region" />
